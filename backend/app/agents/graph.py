@@ -1,10 +1,11 @@
 from typing import Any
 
 from langgraph.graph import StateGraph, END
-from typing import TypedDict, Literal, Sequence
+from typing import TypedDict
 
 from app.tools.base import BaseTool, ToolResult
 from app.tools.calculator import CalculatorTool
+from app.llm.client import chat_completion, extract_choice
 
 
 # ── State ──────────────────────────────────────────────────
@@ -21,60 +22,63 @@ TOOLS: dict[str, BaseTool] = {
 }
 
 
-def _format_tools_for_llm() -> str:
-    lines = []
-    for t in TOOLS.values():
-        lines.append(f"- {t.name}: {t.description}")
-    return "\n".join(lines)
+def _get_openai_tools() -> list[dict]:
+    return [t.to_openai_tool() for t in TOOLS.values()]
+
+
+async def _run_tool_call(tool_name: str, args: dict) -> ToolResult:
+    tool = TOOLS.get(tool_name)
+    if tool is None:
+        return ToolResult(output=None, error=f"Unknown tool: {tool_name}")
+    return await tool.run(**args)
 
 
 # ── Nodes ──────────────────────────────────────────────────
 
-def call_model(state: AgentState) -> dict:
+async def call_model(state: AgentState) -> dict:
     """LLM decides: respond directly or call a tool."""
-    messages = state["messages"]
-    last = messages[-1]["content"] if messages else ""
+    msg = await chat_completion(
+        messages=state["messages"],
+        tools=_get_openai_tools(),
+    )
+    choice = extract_choice(msg)
 
-    # Simple routing logic — in production this would call an LLM
-    # For now, check if last message looks like a math expression
-    if any(op in last for op in ["+", "-", "*", "/", "**", "sqrt", "sin", "cos"]):
-        return {"messages": messages, "next": "tools"}
+    messages = list(state["messages"])
+    messages.append(choice)
 
-    return {"messages": messages, "next": "respond"}
+    has_tool_calls = "tool_calls" in choice and choice["tool_calls"]
+    return {"messages": messages, "next": "tools" if has_tool_calls else "respond"}
 
 
 async def call_tool(state: AgentState) -> dict:
-    """Execute the requested tool."""
-    messages = state["messages"]
-    last = messages[-1]["content"] if messages else ""
+    """Execute the tool the LLM requested."""
+    messages = list(state["messages"])
+    last = messages[-1]
+    results = []
 
-    # Simple heuristic: try calculator
-    tool = TOOLS.get("calculator")
-    if tool:
-        result = await tool.run(expression=last)
+    for tc in last.get("tool_calls", []):
+        fn = tc["function"]
+        name, args_str = fn["name"], fn["arguments"]
+        import json
+        args = json.loads(args_str)
+        result = await _run_tool_call(name, args)
+        results.append({
+            "role": "tool",
+            "tool_call_id": tc["id"],
+            "content": str(result.output) if result.success else f"Error: {result.error}",
+        })
 
-        if result.success:
-            messages.append({"role": "tool", "content": str(result.output), "tool": "calculator"})
-        else:
-            messages.append({"role": "tool", "content": f"Error: {result.error}", "tool": "calculator"})
-    else:
-        messages.append({"role": "tool", "content": "No tool available", "tool": "calculator"})
-
+    messages.extend(results)
     return {"messages": messages, "next": "respond"}
 
 
-def respond(state: AgentState) -> dict:
-    """Generate final response."""
-    messages = state["messages"]
-    # In production this would call the LLM
-    # For now, return the last tool output or a default message
-    tool_msgs = [m for m in messages if m.get("role") == "tool"]
-    if tool_msgs:
-        response = tool_msgs[-1]["content"]
-    else:
-        response = "I understand your request. (LLM integration pending — drop in your model client.)"
+async def respond(state: AgentState) -> dict:
+    """Generate final response from LLM with tool results."""
+    msg = await chat_completion(messages=state["messages"])
+    choice = extract_choice(msg)
 
-    messages.append({"role": "assistant", "content": response})
+    messages = list(state["messages"])
+    messages.append(choice)
     return {"messages": messages, "next": END}
 
 
@@ -86,7 +90,7 @@ def router(state: AgentState) -> str:
 
 # ── Build graph ────────────────────────────────────────────
 
-def build_agent() -> StateGraph:
+def build_agent():
     workflow = StateGraph(AgentState)
 
     workflow.add_node("model", call_model)
