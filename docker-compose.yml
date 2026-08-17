@@ -1,0 +1,23 @@
+services:
+  backend:
+    build: ./infra/docker
+    ports:
+      - "8000:8000"
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: agentos
+      POSTGRES_USER: agentos
+      POSTGRES_PASSWORD: agentos
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
