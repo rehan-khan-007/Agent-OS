@@ -1,0 +1,29 @@
+fastapi>=0.110
+uvicorn[standard]
+pydantic>=2
+pydantic-settings
+
+# Redis
+redis>=5
+
+# PostgreSQL
+asyncpg
+sqlalchemy[asyncio]
+alembic
+
+# LLM
+httpx
+openai
+
+# Agent
+langgraph>=0.2
+langchain-core
+
+# Observability
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+
+# Utils
+python-dotenv
+python-multipart
