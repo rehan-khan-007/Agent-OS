@@ -4,14 +4,6 @@ Evaluation-Driven AI Agent Runtime.
 
 A stateful agent system with LLM planning, tool orchestration, RAG, distributed execution, and LLM evaluation.
 
-## Quickstart
-
-```bash
-git clone git@github.com:rehan-khan-007/Agent-OS.git
-cd Agent-OS
-make dev
-```
-
 ## Architecture
 
 ```
