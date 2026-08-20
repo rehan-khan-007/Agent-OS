@@ -1,0 +1,17 @@
+[
+  {
+    "question": "What tech stack does this project use?",
+    "expected_source": "README.md",
+    "expected_chunk_index": 4
+  },
+  {
+    "question": "What is the status of this project?",
+    "expected_source": "README.md",
+    "expected_chunk_index": 5
+  },
+  {
+    "question": "What does the retrieval folder contain?",
+    "expected_source": "README.md",
+    "expected_chunk_index": 3
+  }
+]
