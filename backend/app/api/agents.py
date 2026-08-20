@@ -1,17 +1,17 @@
-import uuid
-
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.graph import agent
-from app.memory.short_term import memory
+from app.memory.long_term import memory
+from app.database import get_session
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
 class AgentRequest(BaseModel):
     message: str
-    session_id: str | None = None  # if omitted, a new session is created
+    session_id: str | None = None
 
 
 class AgentResponse(BaseModel):
@@ -21,11 +21,11 @@ class AgentResponse(BaseModel):
 
 
 @router.post("/chat", response_model=AgentResponse)
-async def chat(request: AgentRequest):
+async def chat(request: AgentRequest, db: AsyncSession = Depends(get_session)):
+    import uuid
     session_id = request.session_id or str(uuid.uuid4())
 
-    # Load prior history for this session, then append the new user message
-    history = memory.get_history(session_id)
+    history = await memory.get_history(session_id, db)
     user_message = {"role": "user", "content": request.message}
 
     state = {
@@ -35,8 +35,7 @@ async def chat(request: AgentRequest):
     result = await agent.ainvoke(state)
     messages = result["messages"]
 
-    # Persist the full updated history (including this turn) back into memory
-    memory.extend(session_id, messages[len(history):])
+    await memory.extend(session_id, messages[len(history):], db)
 
     last = messages[-1]["content"] if messages else ""
     return AgentResponse(response=last, session_id=session_id, messages=messages)
