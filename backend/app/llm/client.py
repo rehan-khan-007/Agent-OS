@@ -4,6 +4,7 @@ from httpx import AsyncClient
 
 from app.config import settings
 from app.observability.tracing import langfuse, is_enabled
+from app.routing.router import route_model
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -13,9 +14,12 @@ DEFAULT_MODEL = "openai/gpt-4o-mini"
 async def chat_completion(
     messages: list[dict],
     tools: list[dict] | None = None,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
 ) -> dict:
     """Call OpenRouter chat completions endpoint, traced via Langfuse."""
+    if model is None:
+        model = route_model(messages, tools)
+
     headers = {
         "Authorization": f"Bearer {settings.openrouter_api_key}",
         "Content-Type": "application/json",
