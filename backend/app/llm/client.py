@@ -1,6 +1,9 @@
+import time
+
 from httpx import AsyncClient
 
 from app.config import settings
+from app.observability.tracing import langfuse, is_enabled
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -12,7 +15,7 @@ async def chat_completion(
     tools: list[dict] | None = None,
     model: str = DEFAULT_MODEL,
 ) -> dict:
-    """Call OpenRouter chat completions endpoint."""
+    """Call OpenRouter chat completions endpoint, traced via Langfuse."""
     headers = {
         "Authorization": f"Bearer {settings.openrouter_api_key}",
         "Content-Type": "application/json",
@@ -25,10 +28,28 @@ async def chat_completion(
         body["tools"] = tools
         body["tool_choice"] = "auto"
 
+    start = time.time()
     async with AsyncClient(timeout=60) as client:
         resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+    duration = time.time() - start
+
+    if is_enabled():
+        try:
+            with langfuse.start_as_current_observation(
+                as_type="generation",
+                name="chat_completion",
+                model=model,
+                input=messages,
+                output=data.get("choices", [{}])[0].get("message"),
+                metadata={"duration_seconds": duration, "had_tools": bool(tools)},
+            ):
+                pass
+        except Exception:
+            pass  # tracing failures should never break the actual agent call
+
+    return data
 
 
 def extract_choice(data: dict) -> dict:
