@@ -27,3 +27,5 @@ opentelemetry-instrumentation-fastapi
 # Utils
 python-dotenv
 python-multipart
+langfuse
+pgvector
