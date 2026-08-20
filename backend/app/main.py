@@ -14,7 +14,7 @@ app = FastAPI(title="Agent-OS", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000, "https://agent-doy9vrp6g-rehan-bf93.vercel.app"],
+    allow_origins=["http://localhost:3000", "https://agent-doy9vrp6g-rehan-bf93.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
