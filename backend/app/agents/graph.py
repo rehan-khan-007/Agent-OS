@@ -5,6 +5,7 @@ from typing import TypedDict
 
 from app.tools.base import BaseTool, ToolResult
 from app.tools.calculator import CalculatorTool
+from app.tools.retrieve import RetrieveTool
 from app.llm.client import chat_completion, extract_choice
 
 
@@ -19,6 +20,7 @@ class AgentState(TypedDict):
 
 TOOLS: dict[str, BaseTool] = {
     "calculator": CalculatorTool(),
+    "retrieve": RetrieveTool(),
 }
 
 
