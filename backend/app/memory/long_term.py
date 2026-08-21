@@ -4,6 +4,8 @@ survives server restarts. Same interface as ShortTermMemory, so the
 API layer can swap between them without other code changes.
 """
 
+import json
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +22,16 @@ class LongTermMemory:
         )
         result = await session.execute(stmt)
         rows = result.scalars().all()
-        return [{"role": r.role, "content": r.content} for r in rows]
+
+        messages = []
+        for r in rows:
+            msg = {"role": r.role, "content": r.content}
+            if r.tool_calls:
+                msg["tool_calls"] = json.loads(r.tool_calls)
+            if r.tool_call_id:
+                msg["tool_call_id"] = r.tool_call_id
+            messages.append(msg)
+        return messages
 
     async def extend(self, session_id: str, messages: list[dict], session: AsyncSession) -> None:
         """Adds multiple messages at once."""
@@ -29,6 +40,8 @@ class LongTermMemory:
                 session_id=session_id,
                 role=m.get("role", "unknown"),
                 content=m.get("content"),
+                tool_calls=json.dumps(m["tool_calls"]) if m.get("tool_calls") else None,
+                tool_call_id=m.get("tool_call_id"),
             )
             session.add(row)
         await session.commit()

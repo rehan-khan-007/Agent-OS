@@ -100,7 +100,7 @@ def build_agent():
     workflow.add_node("respond", respond)
 
     workflow.set_entry_point("model")
-    workflow.add_conditional_edges("model", router)
+    workflow.add_conditional_edges("model", router, {"tools": "tools", "respond": END})
     workflow.add_edge("tools", "respond")
     workflow.add_edge("respond", END)
 
