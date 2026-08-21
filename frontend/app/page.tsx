@@ -27,24 +27,56 @@ export default function ChatPage() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/agents/chat`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/agents/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: input, session_id: sessionId }),
       });
-      const data = await res.json();
-      setSessionId(data.session_id);
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: data.response },
-      ]);
+
+      if (!res.body) throw new Error("No response body");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let assistantText = "";
+      let started = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+
+        for (const part of parts) {
+          if (!part.startsWith("data: ")) continue;
+          const evt = JSON.parse(part.slice(6));
+
+          if (evt.type === "session") {
+            setSessionId(evt.session_id);
+          } else if (evt.type === "chunk") {
+            assistantText += evt.text;
+            if (!started) {
+              started = true;
+              setLoading(false);
+              setMessages((prev) => [...prev, { role: "assistant", content: assistantText }]);
+            } else {
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = { role: "assistant", content: assistantText };
+                return updated;
+              });
+            }
+          }
+        }
+      }
     } catch {
+      setLoading(false);
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: "Something went wrong reaching the agent." },
       ]);
-    } finally {
-      setLoading(false);
     }
   }
 
