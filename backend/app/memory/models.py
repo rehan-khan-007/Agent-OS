@@ -16,4 +16,6 @@ class ConversationMessage(Base):
     session_id = Column(String, nullable=False, index=True)
     role = Column(String, nullable=False)       # 'user', 'assistant', 'tool'
     content = Column(Text, nullable=True)
+    tool_calls = Column(Text, nullable=True)     # JSON-encoded list of tool calls
+    tool_call_id = Column(String, nullable=True) # links a 'tool' message back to its call
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
