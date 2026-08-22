@@ -6,9 +6,13 @@ from app.retrieval.pipeline import retrieve_relevant_chunks
 class RetrieveTool(BaseTool):
     name = "retrieve"
     description = (
-        "Search the knowledge base for information relevant to a query. "
-        "Use this when you need facts or context from stored documents "
-        "to answer the user's question."
+        "Search the user's document library for information relevant to a query. "
+        "This includes any files the user has uploaded through the chat interface "
+        "(PDF, TXT, or MD), as well as any other documents already ingested into "
+        "the system. Always use this tool when the user refers to something they "
+        "uploaded, attached, or added, or when you need facts or context from "
+        "stored documents to answer their question — you do not have direct file "
+        "access, so this tool is the only way to read uploaded content."
     )
 
     async def run(self, query: str, top_k: int = 3) -> ToolResult:
@@ -39,7 +43,7 @@ class RetrieveTool(BaseTool):
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "The question or topic to search for in the knowledge base",
+                            "description": "The question or topic to search for in the document library",
                         },
                         "top_k": {
                             "type": "integer",
