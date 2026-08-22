@@ -7,12 +7,22 @@ type Message = {
   content: string | null;
 };
 
+type UploadState = {
+  status: "idle" | "uploading" | "processing" | "done" | "failed";
+  filename?: string;
+  chunksProcessed?: number;
+  chunksTotal?: number;
+  error?: string;
+};
+
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [upload, setUpload] = useState<UploadState>({ status: "idle" });
   const bottomRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -80,6 +90,74 @@ export default function ChatPage() {
     }
   }
 
+  async function pollUploadStatus(uploadId: string, filename: string) {
+    const maxAttempts = 60; // ~2 minutes at 2s intervals
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/documents/upload/${uploadId}/status`);
+        const data = await res.json();
+
+        if (data.status === "done") {
+          setUpload({
+            status: "done",
+            filename,
+            chunksProcessed: data.chunks_processed,
+            chunksTotal: data.chunks_total,
+          });
+          setTimeout(() => setUpload({ status: "idle" }), 4000);
+          return;
+        }
+        if (data.status === "failed") {
+          setUpload({ status: "failed", filename, error: data.error });
+          setTimeout(() => setUpload({ status: "idle" }), 6000);
+          return;
+        }
+        setUpload({
+          status: "processing",
+          filename,
+          chunksProcessed: data.chunks_processed,
+          chunksTotal: data.chunks_total,
+        });
+      } catch {
+        // transient poll failure — keep trying until maxAttempts
+      }
+    }
+    setUpload({ status: "failed", filename, error: "Timed out waiting for processing." });
+    setTimeout(() => setUpload({ status: "idle" }), 6000);
+  }
+
+  async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = ""; // allow re-selecting the same file later
+
+    setUpload({ status: "uploading", filename: file.name });
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/documents/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Upload failed." }));
+        setUpload({ status: "failed", filename: file.name, error: err.detail });
+        setTimeout(() => setUpload({ status: "idle" }), 6000);
+        return;
+      }
+
+      const data = await res.json();
+      pollUploadStatus(data.upload_id, file.name);
+    } catch {
+      setUpload({ status: "failed", filename: file.name, error: "Network error during upload." });
+      setTimeout(() => setUpload({ status: "idle" }), 6000);
+    }
+  }
+
   return (
     <div className="flex flex-col h-screen bg-[#F5F4EF] text-[#1F1E1C]">
       {/* Header */}
@@ -132,10 +210,45 @@ export default function ChatPage() {
         </div>
       </main>
 
+      {/* Upload status pill */}
+      {upload.status !== "idle" && (
+        <div className="px-6 pb-2">
+          <div className="max-w-2xl mx-auto">
+            <div className="text-xs text-[#8A8676] bg-[#EDEAE0] rounded-full px-4 py-1.5 inline-block">
+              {upload.status === "uploading" && `Uploading ${upload.filename}...`}
+              {upload.status === "processing" &&
+                `Processing ${upload.filename}${
+                  upload.chunksTotal ? ` (${upload.chunksProcessed}/${upload.chunksTotal} chunks)` : "..."
+                }`}
+              {upload.status === "done" &&
+                `✓ ${upload.filename} added (${upload.chunksProcessed} chunks)`}
+              {upload.status === "failed" && `✗ ${upload.filename} failed: ${upload.error}`}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Input */}
       <div className="px-6 pb-6 pt-2">
         <div className="max-w-2xl mx-auto">
           <div className="flex items-end gap-2 bg-white border border-[#E5E2D9] rounded-3xl px-4 py-3 shadow-sm focus-within:border-[#C9C5B8] transition-colors">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.txt,.md"
+              className="hidden"
+              onChange={handleFileSelected}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={upload.status === "uploading" || upload.status === "processing"}
+              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-[#8A8676] hover:bg-[#EDEAE0] disabled:opacity-40 transition-colors"
+              title="Upload a document (.pdf, .txt, .md)"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
             <textarea
               rows={1}
               className="flex-1 resize-none bg-transparent outline-none text-[15px] placeholder:text-[#A8A498] max-h-40"
