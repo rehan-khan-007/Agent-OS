@@ -10,8 +10,15 @@ from app.agents.graph import agent
 from app.memory.long_term import memory
 from app.database import get_session
 from app.cache.redis_client import get_cached_response, cache_response
+from app.ratelimit.limiter import rate_limit
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+# Each real chat turn costs at least one LLM call (more with tools),
+# so this limit exists to prevent a single visitor from running up
+# the OpenRouter bill via scripted/repeated requests to the public
+# deployment.
+CHAT_RATE_LIMIT = rate_limit("agents_chat", limit=20, window_seconds=300)
 
 
 class AgentRequest(BaseModel):
@@ -50,7 +57,7 @@ async def _run_agent(request: AgentRequest, db: AsyncSession) -> tuple[str, list
     return session_id, messages, False
 
 
-@router.post("/chat", response_model=AgentResponse)
+@router.post("/chat", response_model=AgentResponse, dependencies=[Depends(CHAT_RATE_LIMIT)])
 async def chat(request: AgentRequest, db: AsyncSession = Depends(get_session)):
     session_id, messages, was_cached = await _run_agent(request, db)
     last = messages[-1]["content"] if messages else ""
@@ -61,7 +68,7 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
 
-@router.post("/chat/stream")
+@router.post("/chat/stream", dependencies=[Depends(CHAT_RATE_LIMIT)])
 async def chat_stream(request: AgentRequest, db: AsyncSession = Depends(get_session)):
     session_id, messages, was_cached = await _run_agent(request, db)
     final_text = messages[-1]["content"] if messages else ""

@@ -16,16 +16,22 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from pydantic import BaseModel
 
 from app.queue.redis_queue import enqueue, get_status, QueueUnavailableError
 from app.queue.worker import DOCUMENT_QUEUE
+from app.ratelimit.limiter import rate_limit
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf"}
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
+
+# Uploads are far more expensive than a chat turn — a single document
+# can trigger hundreds of embedding API calls — so this limit is much
+# tighter than the chat rate limit.
+UPLOAD_RATE_LIMIT = rate_limit("documents_upload", limit=5, window_seconds=600)
 
 
 class UploadResponse(BaseModel):
@@ -43,7 +49,7 @@ class StatusResponse(BaseModel):
     error: str | None = None
 
 
-@router.post("/upload", response_model=UploadResponse)
+@router.post("/upload", response_model=UploadResponse, dependencies=[Depends(UPLOAD_RATE_LIMIT)])
 async def upload_document(file: UploadFile = File(...)):
     suffix = Path(file.filename).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
