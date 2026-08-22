@@ -79,16 +79,21 @@ async def enqueue(queue_name: str, job_type: str, payload: dict, **initial_statu
 
 async def dequeue(queue_name: str, timeout: int = 5) -> dict | None:
     """
-    Blocks up to `timeout` seconds waiting for a job on the named
-    queue. Returns the job dict, or None if the timeout elapses with
-    no job available (this is normal — lets a worker loop check for
-    shutdown signals periodically instead of blocking forever).
+    Pops the next job off the named queue, or None if it's empty.
+
+    Uses a plain non-blocking LPOP rather than a blocking BLPOP.
+    Blocking commands don't play well with Upstash's serverless proxy
+    — in production this caused BLPOP to reliably time out
+    ("Timeout reading from ...upstash.io:6379") even on a healthy
+    connection. LPOP returns immediately either way, and the caller
+    (worker_loop) handles "check again shortly" itself via a short
+    sleep when nothing's available. `timeout` is now unused but kept
+    so callers don't need to change.
     """
     client = get_client()
-    result = await client.blpop([queue_name], timeout=timeout)
-    if result is None:
+    raw_job = await client.lpop(queue_name)
+    if raw_job is None:
         return None
-    _, raw_job = result
     return json.loads(raw_job)
 
 
