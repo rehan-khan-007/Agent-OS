@@ -13,6 +13,7 @@ alembic
 
 # LLM
 httpx
+tenacity
 openai
 
 # Agent
