@@ -8,7 +8,7 @@ from app.observability.logging import configure_logging, get_logger
 from app.api.health import router as health_router
 from app.api.agents import router as agents_router
 from app.api.documents import router as documents_router
-from app.queue.worker import worker_loop, DOCUMENT_QUEUE
+from app.queue.worker import worker_loop, reclaim_loop, DOCUMENT_QUEUE
 
 configure_logging()
 logger = get_logger(__name__)
@@ -29,6 +29,9 @@ async def lifespan(app: FastAPI):
         )
         _worker_tasks.append(task)
     logger.info("Started background workers", extra={"extra_fields": {"count": NUM_WORKERS}})
+
+    reclaim_task = asyncio.create_task(reclaim_loop(DOCUMENT_QUEUE, stop_event=_stop_event))
+    _worker_tasks.append(reclaim_task)
 
     yield
 

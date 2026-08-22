@@ -17,6 +17,7 @@ would work correctly across multiple app instances.
 """
 
 import json
+import time
 import uuid
 from typing import Any
 
@@ -27,6 +28,8 @@ from app.config import settings
 _client: redis.Redis | None = None
 
 STATUS_KEY_PREFIX = "job_status:"
+JOB_DATA_KEY_PREFIX = "job_data:"
+INFLIGHT_KEY_PREFIX = "inflight:"
 STATUS_TTL_SECONDS = 60 * 60 * 24  # keep job status visible for 24h
 
 
@@ -64,6 +67,13 @@ async def enqueue(queue_name: str, job_type: str, payload: dict, **initial_statu
     overwrite it back to "queued", making a genuinely finished job
     look stuck. Writing status first closes that race.
 
+    The full job (job_type, payload, queue_name) is also persisted
+    keyed by job_id, separately from the queue list itself. This is
+    what makes reclaim_stale_jobs() possible: once a job is popped
+    off the list by a worker (dequeue), it's gone from the list even
+    if that worker later crashes mid-processing — without a durable
+    copy of the job data, there would be nothing to re-enqueue.
+
     Raises QueueUnavailableError if Redis isn't reachable — callers
     must handle this rather than assume the job was queued."""
     client = get_client()
@@ -72,6 +82,7 @@ async def enqueue(queue_name: str, job_type: str, payload: dict, **initial_statu
     job = {"job_id": job_id, "job_type": job_type, "payload": payload}
 
     await update_status(job_id, status="queued", **initial_status)
+    await client.set(f"{JOB_DATA_KEY_PREFIX}{job_id}", json.dumps({**job, "queue_name": queue_name}), ex=STATUS_TTL_SECONDS)
     await client.rpush(queue_name, json.dumps(job))
 
     return job_id
@@ -89,12 +100,78 @@ async def dequeue(queue_name: str, timeout: int = 5) -> dict | None:
     (worker_loop) handles "check again shortly" itself via a short
     sleep when nothing's available. `timeout` is now unused but kept
     so callers don't need to change.
+
+    On a successful pop, the job is marked "in-flight" (a sorted set
+    of queue_name -> {job_id: dequeued_timestamp}). This is how
+    reclaim_stale_jobs() later notices a job whose worker died before
+    finishing — mark_job_complete() removes it from this set on
+    success, so anything still present after a staleness threshold is
+    presumed abandoned.
     """
     client = get_client()
     raw_job = await client.lpop(queue_name)
     if raw_job is None:
         return None
-    return json.loads(raw_job)
+    job = json.loads(raw_job)
+    await client.zadd(f"{INFLIGHT_KEY_PREFIX}{queue_name}", {job["job_id"]: time.time()})
+    return job
+
+
+async def mark_job_complete(queue_name: str, job_id: str) -> None:
+    """Removes a job from the in-flight set — call this once a job
+    reaches a terminal state (done or failed), so it's no longer a
+    candidate for reclaim."""
+    client = get_client()
+    await client.zrem(f"{INFLIGHT_KEY_PREFIX}{queue_name}", job_id)
+
+
+async def touch_job(queue_name: str, job_id: str) -> None:
+    """Refreshes a job's in-flight timestamp. A worker still actively
+    processing a long job (e.g. embedding hundreds of chunks) should
+    call this periodically so reclaim_stale_jobs() doesn't mistake
+    genuinely-in-progress work for an abandoned job."""
+    client = get_client()
+    await client.zadd(f"{INFLIGHT_KEY_PREFIX}{queue_name}", {job_id: time.time()})
+
+
+async def reclaim_stale_jobs(queue_name: str, stale_after_seconds: int) -> list[str]:
+    """
+    Finds jobs marked in-flight for longer than stale_after_seconds
+    (almost certainly abandoned by a worker that crashed or was
+    killed mid-job) and re-enqueues them using their durably-stored
+    job data. Returns the list of reclaimed job_ids.
+
+    This is the actual crash-recovery mechanism: a job's own handler
+    is responsible for resuming from a checkpoint rather than
+    reprocessing everything from scratch (see is_chunk_done /
+    mark_chunk_done, used by the document ingestion handler).
+    """
+    client = get_client()
+    cutoff = time.time() - stale_after_seconds
+
+    stale_ids = await client.zrangebyscore(f"{INFLIGHT_KEY_PREFIX}{queue_name}", min=0, max=cutoff)
+    reclaimed = []
+
+    for job_id in stale_ids:
+        raw_job_data = await client.get(f"{JOB_DATA_KEY_PREFIX}{job_id}")
+        if raw_job_data is None:
+            # Job data expired or was never stored — can't reclaim,
+            # just drop it from in-flight tracking so it's not
+            # checked again every reclaim cycle.
+            await client.zrem(f"{INFLIGHT_KEY_PREFIX}{queue_name}", job_id)
+            continue
+
+        job_data = json.loads(raw_job_data)
+        await update_status(job_id, status="queued", reclaimed=True)
+        await client.rpush(queue_name, json.dumps({
+            "job_id": job_id,
+            "job_type": job_data["job_type"],
+            "payload": job_data["payload"],
+        }))
+        await client.zrem(f"{INFLIGHT_KEY_PREFIX}{queue_name}", job_id)
+        reclaimed.append(job_id)
+
+    return reclaimed
 
 
 async def update_status(job_id: str, **fields: Any) -> None:
@@ -112,3 +189,33 @@ async def get_status(job_id: str) -> dict | None:
     if not raw:
         return None
     return {k: json.loads(v) for k, v in raw.items()}
+
+CHECKPOINT_KEY_PREFIX = "checkpoint:"
+
+
+async def mark_chunk_done(job_id: str, chunk_index: int) -> None:
+    """Records that a specific chunk has been successfully processed
+    for this job. Used to resume a job from where it left off instead
+    of reprocessing (and re-paying for) chunks already completed."""
+    client = get_client()
+    key = f"{CHECKPOINT_KEY_PREFIX}{job_id}"
+    await client.sadd(key, chunk_index)
+    await client.expire(key, STATUS_TTL_SECONDS)
+
+
+async def get_completed_chunks(job_id: str) -> set[int]:
+    """Returns the set of chunk indices already completed for this
+    job, so a handler can skip them on resume. Empty set for a job
+    that's never been checkpointed (including one running for the
+    first time)."""
+    client = get_client()
+    raw = await client.smembers(f"{CHECKPOINT_KEY_PREFIX}{job_id}")
+    return {int(x) for x in raw}
+
+
+async def clear_checkpoint(job_id: str) -> None:
+    """Removes checkpoint data once a job reaches a terminal state —
+    no need to keep tracking per-chunk progress for a job that's
+    already done or has permanently failed."""
+    client = get_client()
+    await client.delete(f"{CHECKPOINT_KEY_PREFIX}{job_id}")

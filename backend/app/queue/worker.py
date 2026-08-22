@@ -27,21 +27,45 @@ DOCUMENT_QUEUE = "document_ingestion"
 
 
 async def _handle_ingest_document(job_id: str, payload: dict) -> None:
-    """Handler for 'ingest_document' jobs: load -> chunk -> embed -> store."""
+    """
+    Handler for 'ingest_document' jobs: load -> chunk -> embed -> store.
+
+    Checkpoint-aware: before processing, loads the set of chunk
+    indices already completed for this job_id (empty on a first run).
+    Already-completed chunks are skipped entirely — no re-embedding,
+    no re-storing. This is what makes reclaim_stale_jobs() actually
+    useful: if a worker dies after embedding 150 of 200 chunks, the
+    job gets re-queued, but resuming means paying for ~50 more
+    embedding calls, not 200 all over again.
+    """
     file_path = payload["file_path"]
     filename = payload["filename"]
 
-    await redis_queue.update_status(job_id, status="processing", chunks_processed=0, chunks_total=0)
+    already_done = await redis_queue.get_completed_chunks(job_id)
+    resuming = len(already_done) > 0
+
+    await redis_queue.update_status(
+        job_id, status="processing", chunks_processed=len(already_done), chunks_total=0
+    )
 
     text = load_document(file_path)
     chunks = chunk_text(text, chunk_size=1000, overlap=100)
     await redis_queue.update_status(job_id, chunks_total=len(chunks))
 
-    processed = 0
+    if resuming:
+        logger.info(
+            "Resuming job from checkpoint",
+            extra={"extra_fields": {"job_id": job_id, "already_done": len(already_done), "total": len(chunks)}},
+        )
+
+    processed = len(already_done)
     skipped = []
 
     async with async_session() as session:
         for chunk in chunks:
+            if chunk.index in already_done:
+                continue  # already embedded and stored in a previous attempt
+
             try:
                 vector = embed_text(chunk.text)
             except Exception as e:
@@ -55,7 +79,9 @@ async def _handle_ingest_document(job_id: str, payload: dict) -> None:
                 embedding=vector,
             ))
             processed += 1
+            await redis_queue.mark_chunk_done(job_id, chunk.index)
             await redis_queue.update_status(job_id, chunks_processed=processed)
+            await redis_queue.touch_job(DOCUMENT_QUEUE, job_id)
 
         await session.commit()
 
@@ -65,6 +91,7 @@ async def _handle_ingest_document(job_id: str, payload: dict) -> None:
         chunks_processed=processed,
         skipped_chunks=skipped,
     )
+    await redis_queue.clear_checkpoint(job_id)
 
 
 HANDLERS = {
@@ -72,7 +99,7 @@ HANDLERS = {
 }
 
 
-async def _process_job(job: dict) -> None:
+async def _process_job(job: dict, queue_name: str) -> None:
     job_id = job["job_id"]
     job_type = job["job_type"]
     payload = job["payload"]
@@ -81,16 +108,23 @@ async def _process_job(job: dict) -> None:
     if handler is None:
         logger.error("No handler registered for job type", extra={"extra_fields": {"job_type": job_type}})
         await redis_queue.update_status(job_id, status="failed", error=f"Unknown job type: {job_type}")
+        await redis_queue.mark_job_complete(queue_name, job_id)
         return
 
     try:
         await handler(job_id, payload)
+        await redis_queue.mark_job_complete(queue_name, job_id)
     except Exception as e:
         logger.error(
             "Job failed",
             extra={"extra_fields": {"job_id": job_id, "job_type": job_type, "error": str(e)}},
         )
         await redis_queue.update_status(job_id, status="failed", error=str(e))
+        # Deliberately still marked complete (not left in-flight) even
+        # on failure — a handler-level failure (e.g. a corrupt file)
+        # will fail identically on every retry, so leaving it in-flight
+        # for reclaim would just loop forever rather than resolve.
+        await redis_queue.mark_job_complete(queue_name, job_id)
 
 
 async def worker_loop(queue_name: str, worker_id: str, stop_event: asyncio.Event) -> None:
@@ -136,7 +170,7 @@ async def worker_loop(queue_name: str, worker_id: str, stop_event: asyncio.Event
 
         logger.info("Processing job", extra={"extra_fields": {"job_id": job["job_id"], "worker_id": worker_id}})
         try:
-            await _process_job(job)
+            await _process_job(job, queue_name)
         except Exception as e:
             # _process_job already catches handler-level failures and
             # writes status="failed" for the job itself. This outer
@@ -148,3 +182,39 @@ async def worker_loop(queue_name: str, worker_id: str, stop_event: asyncio.Event
             )
 
     logger.info("Worker stopped", extra={"extra_fields": {"worker_id": worker_id}})
+
+RECLAIM_INTERVAL_SECONDS = 30
+RECLAIM_STALE_AFTER_SECONDS = 120  # a job with no progress update in 2 minutes is presumed abandoned
+
+
+async def reclaim_loop(queue_name: str, stop_event: asyncio.Event) -> None:
+    """
+    Periodically checks for jobs that have been in-flight (dequeued
+    but never completed) longer than RECLAIM_STALE_AFTER_SECONDS, and
+    re-queues them. This is what actually recovers from a worker
+    crashing mid-job — without this running, reclaim_stale_jobs()
+    exists but nothing ever calls it, and an abandoned job would sit
+    forgotten forever.
+    """
+    logger.info("Reclaim loop started", extra={"extra_fields": {"queue": queue_name}})
+
+    while not stop_event.is_set():
+        try:
+            reclaimed = await redis_queue.reclaim_stale_jobs(queue_name, RECLAIM_STALE_AFTER_SECONDS)
+            if reclaimed:
+                logger.info(
+                    "Reclaimed stale jobs",
+                    extra={"extra_fields": {"queue": queue_name, "job_ids": reclaimed, "count": len(reclaimed)}},
+                )
+        except Exception as e:
+            logger.error(
+                "Reclaim loop encountered an error, staying alive",
+                extra={"extra_fields": {"queue": queue_name, "error": str(e)}},
+            )
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=RECLAIM_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            pass  # normal — just means it's time to check again
+
+    logger.info("Reclaim loop stopped", extra={"extra_fields": {"queue": queue_name}})
