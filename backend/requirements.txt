@@ -30,6 +30,7 @@ python-dotenv
 python-multipart
 langfuse
 pgvector
+rank_bm25
 pypdf
 
 # Testing

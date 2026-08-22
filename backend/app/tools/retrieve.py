@@ -1,6 +1,6 @@
 from app.tools.base import BaseTool, ToolResult
 from app.database import async_session
-from app.retrieval.pipeline import retrieve_relevant_chunks
+from app.retrieval.hybrid import hybrid_search
 
 
 class RetrieveTool(BaseTool):
@@ -18,7 +18,7 @@ class RetrieveTool(BaseTool):
     async def run(self, query: str, top_k: int = 3) -> ToolResult:
         try:
             async with async_session() as session:
-                chunks = await retrieve_relevant_chunks(query, session, top_k=top_k)
+                chunks = await hybrid_search(query, session, top_k=top_k)
 
             if not chunks:
                 return ToolResult(output="No relevant information found.")
