@@ -126,3 +126,53 @@ async def test_worker_handles_unknown_job_type_gracefully(monkeypatch):
     status = await redis_queue.get_status(job_id)
     assert status["status"] == "failed"
     assert "Unknown job type" in status["error"]
+
+@requires_redis
+@pytest.mark.asyncio
+async def test_worker_survives_unexpected_dequeue_exception(monkeypatch):
+    """
+    Simulates a network-level failure during dequeue that is NOT a
+    QueueUnavailableError (e.g. a raw redis timeout/connection error).
+    The worker must log it and keep running, not die silently — this
+    is the exact bug found while deploying this worker for real: an
+    uncaught exception in the loop killed the background task with
+    zero visible symptom other than jobs never getting processed.
+    """
+    call_count = {"n": 0}
+    orig_dequeue = redis_queue.dequeue
+
+    async def flaky_dequeue(queue_name, timeout=1):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise ConnectionError("simulated unexpected network failure")
+        return await orig_dequeue(queue_name, timeout=1)
+
+    monkeypatch.setattr(redis_queue, "dequeue", flaky_dequeue)
+
+    call_log = []
+
+    async def fake_handler(job_id, payload):
+        call_log.append(job_id)
+        await redis_queue.update_status(job_id, status="done")
+
+    monkeypatch.setitem(worker.HANDLERS, "test_job", fake_handler)
+
+    queue_name = f"test_worker_flaky_q_{uuid.uuid4()}"
+    job_id = await redis_queue.enqueue(queue_name, "test_job", {})
+
+    stop_event = asyncio.Event()
+    worker_task = asyncio.create_task(
+        worker.worker_loop(queue_name, worker_id="test-worker", stop_event=stop_event)
+    )
+
+    # Give it enough time to hit the simulated failure on attempt 1,
+    # recover, and successfully process the job on a later attempt.
+    await asyncio.sleep(3)
+    stop_event.set()
+    await asyncio.wait_for(worker_task, timeout=5)
+
+    assert call_count["n"] >= 2, "worker should have retried dequeue after the simulated failure"
+    assert job_id in call_log, "worker should have recovered and eventually processed the job"
+
+    status = await redis_queue.get_status(job_id)
+    assert status["status"] == "done"

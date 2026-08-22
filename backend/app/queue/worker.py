@@ -98,6 +98,17 @@ async def worker_loop(queue_name: str, worker_id: str, stop_event: asyncio.Event
     Continuously dequeues and processes jobs until stop_event is set.
     The dequeue timeout (5s) means the loop checks stop_event
     periodically instead of blocking forever, so shutdown is prompt.
+
+    The while-loop body is wrapped in a broad except, not just
+    QueueUnavailableError. This matters a lot: this loop runs inside
+    an asyncio.create_task() that nothing actively awaits until
+    shutdown. If a network-level exception from the Redis client
+    (a timeout, a connection reset, anything not explicitly caught)
+    ever escaped this loop, the whole task would silently die —
+    logging nothing, and never processing another job again — with no
+    visible symptom other than jobs mysteriously sitting in "queued"
+    forever. That's a real failure mode this project hit while
+    building and deploying this exact worker.
     """
     logger.info("Worker started", extra={"extra_fields": {"worker_id": worker_id, "queue": queue_name}})
 
@@ -108,11 +119,31 @@ async def worker_loop(queue_name: str, worker_id: str, stop_event: asyncio.Event
             logger.error("Worker cannot reach queue, retrying shortly", extra={"extra_fields": {"error": str(e)}})
             await asyncio.sleep(5)
             continue
+        except Exception as e:
+            # Any other failure talking to Redis (timeout, connection
+            # reset, etc.) — log it and keep the worker alive instead
+            # of letting the loop die silently.
+            logger.error(
+                "Unexpected error while dequeuing, worker staying alive and retrying",
+                extra={"extra_fields": {"worker_id": worker_id, "error": str(e), "error_type": type(e).__name__}},
+            )
+            await asyncio.sleep(2)
+            continue
 
         if job is None:
             continue  # timeout elapsed, no job — loop back and check stop_event
 
         logger.info("Processing job", extra={"extra_fields": {"job_id": job["job_id"], "worker_id": worker_id}})
-        await _process_job(job)
+        try:
+            await _process_job(job)
+        except Exception as e:
+            # _process_job already catches handler-level failures and
+            # writes status="failed" for the job itself. This outer
+            # catch is a last-resort safety net so a bug in
+            # _process_job's own bookkeeping can't kill the worker.
+            logger.error(
+                "Unexpected error processing job, worker staying alive",
+                extra={"extra_fields": {"worker_id": worker_id, "job_id": job.get("job_id"), "error": str(e)}},
+            )
 
     logger.info("Worker stopped", extra={"extra_fields": {"worker_id": worker_id}})
