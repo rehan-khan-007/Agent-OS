@@ -2,6 +2,7 @@ from httpx import AsyncClient
 
 from app.config import settings
 from app.tools.base import BaseTool, ToolResult
+from app.cache.redis_client import get_cached_tool_result, cache_tool_result
 
 TAVILY_URL = "https://api.tavily.com/search"
 
@@ -17,6 +18,11 @@ class WebSearchTool(BaseTool):
     async def run(self, query: str) -> ToolResult:
         if not settings.tavily_api_key:
             return ToolResult(output=None, error="Web search is not configured (missing API key).")
+
+        cache_args = {"query": query}
+        cached = await get_cached_tool_result(self.name, cache_args)
+        if cached is not None:
+            return ToolResult(output=cached)
 
         body = {
             "api_key": settings.tavily_api_key,
@@ -36,6 +42,8 @@ class WebSearchTool(BaseTool):
             {"title": r.get("title"), "url": r.get("url"), "snippet": r.get("content")}
             for r in results
         ]
+
+        await cache_tool_result(self.name, cache_args, formatted)
         return ToolResult(output=formatted)
 
     def to_openai_tool(self) -> dict:
