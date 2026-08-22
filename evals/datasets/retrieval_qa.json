@@ -1,17 +1,62 @@
 [
   {
-    "question": "What tech stack does this project use?",
-    "expected_source": "README.md",
-    "expected_chunk_index": 4
+    "question": "What is GRAPE and what problem does it solve in quantum control?",
+    "expected_sources": ["1102.4096v2.pdf", "1510.02420v5.pdf"]
   },
   {
-    "question": "What is the status of this project?",
-    "expected_source": "README.md",
-    "expected_chunk_index": 5
+    "question": "How does gradient ascent pulse engineering work for spin ensembles?",
+    "expected_sources": ["1102.4096v2.pdf"]
   },
   {
-    "question": "What does the retrieval folder contain?",
-    "expected_source": "README.md",
-    "expected_chunk_index": 3
+    "question": "What is second order gradient ascent pulse engineering?",
+    "expected_sources": ["1102.4096v2.pdf"]
+  },
+  {
+    "question": "How is the Newton-Raphson method applied to optimal control of spin systems?",
+    "expected_sources": ["1510.02420v5.pdf"]
+  },
+  {
+    "question": "What convergence properties does the modified Newton-Raphson GRAPE method have?",
+    "expected_sources": ["1510.02420v5.pdf"]
+  },
+  {
+    "question": "What are the basic principles of optimal control for quantum technologies?",
+    "expected_sources": ["2003.10132v1.pdf"]
+  },
+  {
+    "question": "What is a drift Hamiltonian and a control Hamiltonian in quantum optimal control?",
+    "expected_sources": ["2003.10132v1.pdf"]
+  },
+  {
+    "question": "How is fidelity used as an objective function in quantum control optimization?",
+    "expected_sources": ["2003.10132v1.pdf", "1102.4096v2.pdf", "1510.02420v5.pdf"]
+  },
+  {
+    "question": "What are common numerical optimization algorithms used for pulse shaping in quantum control?",
+    "expected_sources": ["2003.10132v1.pdf", "1102.4096v2.pdf", "1510.02420v5.pdf"]
+  },
+  {
+    "question": "What are the challenges of local maxima in quantum control landscapes?",
+    "expected_sources": ["1510.02420v5.pdf", "2003.10132v1.pdf"]
+  },
+  {
+    "question": "How does GRAPE compare to other pulse optimization methods in terms of computational efficiency?",
+    "expected_sources": ["1102.4096v2.pdf", "1510.02420v5.pdf"]
+  },
+  {
+    "question": "What role does NMR pulse sequence design play in gradient ascent methods?",
+    "expected_sources": ["1102.4096v2.pdf"]
+  },
+  {
+    "question": "What is quantum optimal control used for in quantum computing applications?",
+    "expected_sources": ["2003.10132v1.pdf"]
+  },
+  {
+    "question": "What is second-order information (Hessian) used for in optimal control algorithms?",
+    "expected_sources": ["1510.02420v5.pdf", "1102.4096v2.pdf"]
+  },
+  {
+    "question": "What is quantum entanglement?",
+    "expected_sources": []
   }
 ]
