@@ -15,6 +15,29 @@ import pytest
 from app.config import settings
 from app.cache import redis_client
 
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _reset_redis_client_singleton():
+    """
+    Resets the module-level Redis client singleton before every test.
+
+    Why this is needed: pytest-asyncio gives each async test function
+    its own event loop by default. A redis.asyncio client created
+    under one test's event loop can silently misbehave if reused by a
+    later test running under a different event loop — a real bug this
+    project hit while building this exact test suite. Resetting the
+    singleton per test ensures each test gets a client bound to its
+    own event loop, matching how a single long-running server process
+    (one event loop for the app's lifetime) actually behaves in
+    production, where this issue doesn't occur.
+    """
+    redis_client._client = None
+    yield
+    redis_client._client = None
+
+
 requires_redis = pytest.mark.skipif(
     not settings.redis_url or "localhost" in settings.redis_url,
     reason="No real Redis instance configured (REDIS_URL unset or points to localhost)",
