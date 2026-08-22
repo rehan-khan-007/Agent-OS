@@ -28,4 +28,5 @@ opentelemetry-instrumentation-fastapi
 python-dotenv
 python-multipart
 langfuse
-pgvectorpypdf
+pgvector
+pypdf
