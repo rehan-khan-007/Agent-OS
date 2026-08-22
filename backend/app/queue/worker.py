@@ -131,7 +131,8 @@ async def worker_loop(queue_name: str, worker_id: str, stop_event: asyncio.Event
             continue
 
         if job is None:
-            continue  # timeout elapsed, no job — loop back and check stop_event
+            await asyncio.sleep(1)  # nothing to do — brief pause before polling again
+            continue
 
         logger.info("Processing job", extra={"extra_fields": {"job_id": job["job_id"], "worker_id": worker_id}})
         try:
