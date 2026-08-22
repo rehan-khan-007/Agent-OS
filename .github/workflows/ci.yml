@@ -50,3 +50,12 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://agentos:agentos@localhost:5432/agentos
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Run test suite
+        run: |
+          cd backend
+          python3 -m pytest tests/ -v
+        env:
+          DATABASE_URL: postgresql+asyncpg://agentos:agentos@localhost:5432/agentos
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          REDIS_URL: ""

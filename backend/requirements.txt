@@ -30,3 +30,7 @@ python-multipart
 langfuse
 pgvector
 pypdf
+
+# Testing
+pytest
+pytest-asyncio
