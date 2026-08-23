@@ -28,6 +28,7 @@ import re
 
 from rank_bm25 import BM25Okapi
 from sqlalchemy import select
+from sqlalchemy.orm import defer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.retrieval.models import DocumentChunk
@@ -51,8 +52,19 @@ async def bm25_search(
     Returns an empty list if there are no chunks in the database at
     all — BM25Okapi raises on an empty corpus, so this is checked
     explicitly rather than letting that exception surface.
+
+    Explicitly defers loading the `embedding` column: BM25 scoring
+    only ever touches `.text`, but this query fetches every row in
+    the table on every call. Without deferring it, the (by far
+    largest) embedding vector for all rows gets transferred over the
+    network on every single search — at real corpus scale (7,700+
+    rows), this was found to be the dominant cause of exhausting
+    Neon's free-tier data transfer quota during real testing, not
+    the actual document ingestion. defer() keeps returning genuine
+    DocumentChunk objects with identical attribute access for every
+    other field, so nothing downstream needs to change.
     """
-    result = await session.execute(select(DocumentChunk))
+    result = await session.execute(select(DocumentChunk).options(defer(DocumentChunk.embedding)))
     all_chunks = result.scalars().all()
 
     if not all_chunks:
