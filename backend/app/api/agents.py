@@ -68,13 +68,36 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
 
+def _extract_tool_calls(messages: list[dict]) -> list[dict]:
+    """
+    Pulls out every tool call the agent actually made this turn, from
+    the already-computed message list — no extra agent work, just
+    surfacing what already happened. Used to stream real tool-call
+    events to the frontend (see chat_stream), so the UI can show what
+    the agent is actually doing rather than just its final answer.
+    """
+    calls = []
+    for msg in messages:
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function", {})
+            calls.append({"name": fn.get("name"), "arguments": fn.get("arguments")})
+    return calls
+
+
 @router.post("/chat/stream", dependencies=[Depends(CHAT_RATE_LIMIT)])
 async def chat_stream(request: AgentRequest, db: AsyncSession = Depends(get_session)):
     session_id, messages, was_cached = await _run_agent(request, db)
     final_text = messages[-1]["content"] if messages else ""
+    tool_calls = _extract_tool_calls(messages)
 
     async def event_stream():
         yield _sse({"type": "session", "session_id": session_id})
+
+        for call in tool_calls:
+            yield _sse({"type": "tool_call", "name": call["name"], "arguments": call["arguments"]})
+            if not was_cached:
+                await asyncio.sleep(0.15)  # brief pause so the trace is visibly readable, not a flash
+
         words = final_text.split(" ")
         for i, word in enumerate(words):
             piece = word + (" " if i < len(words) - 1 else "")
