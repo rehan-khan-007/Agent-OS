@@ -26,3 +26,7 @@ Thumbs.db
 # Data
 data/
 *.db
+# PDF corpus — regeneratable via backend/scripts/fetch_arxiv_papers.py
+# and backend/scripts/fetch_sebi_papers.py, not tracked in git (avoids
+# bloating repo size/clone time with hundreds of MB of binary PDFs).
+docs/papers/*.pdf
