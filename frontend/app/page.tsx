@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { parseSSEChunk } from "./lib/sse";
+import { formatToolArgs } from "./lib/format";
 
 type ToolCall = {
   name: string;
@@ -23,16 +25,6 @@ type UploadState = {
 
 type ConnectionState = "checking" | "connected" | "unreachable";
 type Theme = "dark" | "light";
-
-function formatToolArgs(name: string, rawArgs: string): string {
-  try {
-    const parsed = JSON.parse(rawArgs);
-    const parts = Object.entries(parsed).map(([k, v]) => `${k}="${v}"`);
-    return `${name}(${parts.join(", ")})`;
-  } catch {
-    return `${name}(${rawArgs})`;
-  }
-}
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -105,18 +97,15 @@ export default function ChatPage() {
         const { done, value } = await reader.read();
         if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
+        const decoded = decoder.decode(value, { stream: true });
+        const { events, remainingBuffer } = parseSSEChunk(decoded, buffer);
+        buffer = remainingBuffer;
 
-        for (const part of parts) {
-          if (!part.startsWith("data: ")) continue;
-          const evt = JSON.parse(part.slice(6));
-
+        for (const evt of events) {
           if (evt.type === "session") {
-            setSessionId(evt.session_id);
+            setSessionId(evt.session_id as string);
           } else if (evt.type === "tool_call") {
-            toolCalls = [...toolCalls, { name: evt.name, arguments: evt.arguments }];
+            toolCalls = [...toolCalls, { name: evt.name as string, arguments: evt.arguments as string }];
             if (!started) {
               started = true;
               setLoading(false);
@@ -129,7 +118,7 @@ export default function ChatPage() {
               });
             }
           } else if (evt.type === "chunk") {
-            assistantText += evt.text;
+            assistantText += evt.text as string;
             if (!started) {
               started = true;
               setLoading(false);
