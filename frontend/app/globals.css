@@ -1,8 +1,32 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Light theme — cool neutral, not the cream/serif look this
+     project deliberately moved away from. */
+  --background: #F7F7F8;
+  --panel: #FFFFFF;
+  --hairline: #E2E4E8;
+  --foreground: #1A1D21;
+  --muted: #6B7075;
+  --faint: #9297A0;
+  --accent: #B8760F;
+  --accent-foreground: #FFFFFF;
+  --info: #3D6A82;
+  --danger: #A23F3B;
+}
+
+:root.dark {
+  /* Dark theme — the signature instrument-panel look, default. */
+  --background: #0B0D10;
+  --panel: #14171C;
+  --hairline: #262A30;
+  --foreground: #E7E5E0;
+  --muted: #8B8F94;
+  --faint: #5B6066;
+  --accent: #E8A33D;
+  --accent-foreground: #0B0D10;
+  --info: #5B8FA8;
+  --danger: #B85450;
 }
 
 @theme inline {
@@ -12,15 +36,9 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  transition: background 0.15s ease, color 0.15s ease;
 }
