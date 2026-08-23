@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
 from app.database import async_session
-from app.retrieval.pipeline import retrieve_relevant_chunks
+from app.retrieval.hybrid import hybrid_search
 
 
 async def run_benchmark(top_k: int = 3):
@@ -39,7 +39,7 @@ async def run_benchmark(top_k: int = 3):
 
     async with async_session() as db:
         for item in dataset:
-            retrieved = await retrieve_relevant_chunks(item["question"], db, top_k=top_k)
+            retrieved = await hybrid_search(item["question"], db, top_k=top_k)
             retrieved_sources = {r.source for r in retrieved}
             expected = set(item["expected_sources"])
 

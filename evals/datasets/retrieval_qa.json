@@ -1,59 +1,222 @@
 [
   {
     "question": "What is GRAPE and what problem does it solve in quantum control?",
-    "expected_sources": ["1102.4096v2.pdf", "1510.02420v5.pdf"]
+    "expected_sources": [
+      "1102.4096v2.pdf",
+      "1510.02420v5.pdf"
+    ]
   },
   {
     "question": "How does gradient ascent pulse engineering work for spin ensembles?",
-    "expected_sources": ["1102.4096v2.pdf"]
+    "expected_sources": [
+      "1102.4096v2.pdf"
+    ]
   },
   {
     "question": "What is second order gradient ascent pulse engineering?",
-    "expected_sources": ["1102.4096v2.pdf"]
+    "expected_sources": [
+      "1102.4096v2.pdf"
+    ]
   },
   {
     "question": "How is the Newton-Raphson method applied to optimal control of spin systems?",
-    "expected_sources": ["1510.02420v5.pdf"]
+    "expected_sources": [
+      "1510.02420v5.pdf"
+    ]
   },
   {
     "question": "What convergence properties does the modified Newton-Raphson GRAPE method have?",
-    "expected_sources": ["1510.02420v5.pdf"]
+    "expected_sources": [
+      "1510.02420v5.pdf"
+    ]
   },
   {
     "question": "What are the basic principles of optimal control for quantum technologies?",
-    "expected_sources": ["2003.10132v1.pdf"]
+    "expected_sources": [
+      "2003.10132v1.pdf"
+    ]
   },
   {
     "question": "What is a drift Hamiltonian and a control Hamiltonian in quantum optimal control?",
-    "expected_sources": ["2003.10132v1.pdf"]
+    "expected_sources": [
+      "2003.10132v1.pdf"
+    ]
   },
   {
     "question": "How is fidelity used as an objective function in quantum control optimization?",
-    "expected_sources": ["2003.10132v1.pdf", "1102.4096v2.pdf", "1510.02420v5.pdf"]
+    "expected_sources": [
+      "2003.10132v1.pdf",
+      "1102.4096v2.pdf",
+      "1510.02420v5.pdf"
+    ]
   },
   {
     "question": "What are common numerical optimization algorithms used for pulse shaping in quantum control?",
-    "expected_sources": ["2003.10132v1.pdf", "1102.4096v2.pdf", "1510.02420v5.pdf"]
+    "expected_sources": [
+      "2003.10132v1.pdf",
+      "1102.4096v2.pdf",
+      "1510.02420v5.pdf"
+    ]
   },
   {
     "question": "What are the challenges of local maxima in quantum control landscapes?",
-    "expected_sources": ["1510.02420v5.pdf", "2003.10132v1.pdf"]
+    "expected_sources": [
+      "1510.02420v5.pdf",
+      "2003.10132v1.pdf"
+    ]
   },
   {
     "question": "How does GRAPE compare to other pulse optimization methods in terms of computational efficiency?",
-    "expected_sources": ["1102.4096v2.pdf", "1510.02420v5.pdf"]
+    "expected_sources": [
+      "1102.4096v2.pdf",
+      "1510.02420v5.pdf"
+    ]
   },
   {
     "question": "What role does NMR pulse sequence design play in gradient ascent methods?",
-    "expected_sources": ["1102.4096v2.pdf"]
+    "expected_sources": [
+      "1102.4096v2.pdf"
+    ]
   },
   {
     "question": "What is quantum optimal control used for in quantum computing applications?",
-    "expected_sources": ["2003.10132v1.pdf"]
+    "expected_sources": [
+      "2003.10132v1.pdf"
+    ]
   },
   {
     "question": "What is second-order information (Hessian) used for in optimal control algorithms?",
-    "expected_sources": ["1510.02420v5.pdf", "1102.4096v2.pdf"]
+    "expected_sources": [
+      "1510.02420v5.pdf",
+      "1102.4096v2.pdf"
+    ]
+  },
+  {
+    "question": "What is the feedback pulses paradigm for designing NMR pulses?",
+    "expected_sources": [
+      "2402.00058v1.pdf"
+    ]
+  },
+  {
+    "question": "What does the survey literature say about quantum control theory and its applications?",
+    "expected_sources": [
+      "0910.2350v3.pdf"
+    ]
+  },
+  {
+    "question": "How does artificial intelligence and big data influence entrepreneurship research?",
+    "expected_sources": [
+      "1906.00553v1.pdf"
+    ]
+  },
+  {
+    "question": "How does institutional context affect the gender gap in entrepreneurship?",
+    "expected_sources": [
+      "1812.03771v1.pdf"
+    ]
+  },
+  {
+    "question": "How can foreign aid and institutions affect entrepreneurship following natural disasters?",
+    "expected_sources": [
+      "2104.12008v1.pdf"
+    ]
+  },
+  {
+    "question": "What is social entrepreneurship and how does it relate to natural disasters?",
+    "expected_sources": [
+      "2404.08620v1.pdf"
+    ]
+  },
+  {
+    "question": "What role does big data and computational social science play in studying entrepreneurship and innovation?",
+    "expected_sources": [
+      "2505.08706v1.pdf"
+    ]
+  },
+  {
+    "question": "What is the ecological system of innovation framework?",
+    "expected_sources": [
+      "2106.15479v1.pdf"
+    ]
+  },
+  {
+    "question": "What is radiative cooling and how is it used for thermal management?",
+    "expected_sources": [
+      "2010.02426v1.pdf",
+      "2107.04151v3.pdf"
+    ]
+  },
+  {
+    "question": "How does passive sub-ambient cooling compare radiative cooling versus evaporative cooling?",
+    "expected_sources": [
+      "2107.04151v3.pdf"
+    ]
+  },
+  {
+    "question": "What is mechanically tunable radiative cooling used for in adaptive thermal control?",
+    "expected_sources": [
+      "2203.14697v1.pdf"
+    ]
+  },
+  {
+    "question": "How is thermal management achieved for photovoltaics using porous nanochannels?",
+    "expected_sources": [
+      "2105.04745v1.pdf"
+    ]
+  },
+  {
+    "question": "How is laser cooling used for thermal management of lightsails?",
+    "expected_sources": [
+      "2206.05383v1.pdf"
+    ]
+  },
+  {
+    "question": "What thermal modeling approaches are used for heat mitigation in double-clad fiber amplifiers?",
+    "expected_sources": [
+      "1809.10322v1.pdf"
+    ]
+  },
+  {
+    "question": "What should investors know before starting a mutual fund investment journey?",
+    "expected_sources": [
+      "sebi_mutual_funds_beginners.pdf"
+    ]
+  },
+  {
+    "question": "How does one invest in an Initial Public Offering (IPO)?",
+    "expected_sources": [
+      "sebi_how_to_invest_ipo.pdf"
+    ]
+  },
+  {
+    "question": "What is an Exchange Traded Fund (ETF)?",
+    "expected_sources": [
+      "sebi_intro_etfs.pdf"
+    ]
+  },
+  {
+    "question": "What are corporate bonds and how do they work?",
+    "expected_sources": [
+      "sebi_corporate_bonds.pdf"
+    ]
+  },
+  {
+    "question": "What is the KYC procedure for opening an account in the securities market?",
+    "expected_sources": [
+      "sebi_kyc_account_opening.pdf"
+    ]
+  },
+  {
+    "question": "What are common securities market frauds and how can investors safeguard against them?",
+    "expected_sources": [
+      "sebi_safeguarding_against_fraud.pdf"
+    ]
+  },
+  {
+    "question": "What should investors do before dealing with SEBI-registered investment advisers?",
+    "expected_sources": [
+      "sebi_investment_adviser_dos_donts.pdf"
+    ]
   },
   {
     "question": "What is quantum entanglement?",
