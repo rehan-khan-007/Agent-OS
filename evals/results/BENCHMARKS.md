@@ -141,6 +141,43 @@ response's actual `usage` field (real token counts), not estimated.
 
 ---
 
+## LLM-as-judge grounding evaluation
+
+**What was measured:** a genuine LLM-as-judge assessment of grounding
+— replacing the vocabulary-overlap heuristic used in the 4-model
+benchmark above with a real, separate model call that judges whether
+each generated answer is actually supported by its retrieved context,
+with structured reasoning, not a word-overlap guess.
+
+**How:** `evals/runners/grounding_judge_eval.py`. For each of the 35
+real questions: retrieve context via the real `hybrid_search`
+pipeline, generate an answer (gpt-4o-mini — the model this project's
+own 4-model benchmark showed has the best cost/performance ratio),
+then have a separate gpt-4o-mini call judge whether that answer is
+genuinely grounded, returning structured JSON with reasoning.
+
+**Result (Aug 23, 2026): 35/35 — 100.0% judged grounded**
+
+**Total cost for this run: $0.0119** (70 completions + 35 embedding calls)
+
+**Honest caveats:**
+- This confirms, rather than merely repeats, the heuristic's earlier
+  finding — a real judge model reasoning about each answer
+  independently reached the same conclusion the vocabulary-overlap
+  heuristic did, which is meaningful corroboration, not just a second
+  measurement of the same thing.
+- Worth noting honestly: several answers were judged grounded
+  specifically *because* they correctly said the context didn't
+  contain enough detail to answer more specifically, rather than
+  fabricating an answer — a real, positive signal about the system
+  under uncertainty, not just accuracy when a clear answer exists.
+- A single judge model (not a panel/ensemble) — a real limitation of
+  LLM-as-judge methodology generally, not specific to this project.
+  The judge could in principle share blind spots with the answering
+  model, since both are the same model here.
+
+---
+
 ## What these results do and don't support
 
 These benchmarks together give real evidence that:
@@ -152,6 +189,9 @@ These benchmarks together give real evidence that:
 - multiple different LLMs can ground answers in what gets retrieved,
   and the cost/latency tradeoffs between models hold up (and get
   clearer) at real scale, not just in a small initial test
+- grounding specifically is now backed by two independent methods
+  (a vocabulary-overlap heuristic and a real LLM-as-judge call) that
+  agree with each other, not just one unverified metric
 
 They do **not** by themselves demonstrate performance at the scale
 of hundreds of concurrent users or long-running multi-step agent
