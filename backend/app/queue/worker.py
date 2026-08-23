@@ -18,7 +18,7 @@ from app.queue import redis_queue
 from app.queue.redis_queue import QueueUnavailableError
 from app.retrieval.ingestion import load_document
 from app.retrieval.chunking import chunk_text
-from app.retrieval.embeddings import embed_text
+from app.retrieval.embeddings import embed_chunks
 from app.retrieval.models import DocumentChunk
 
 logger = get_logger(__name__)
@@ -37,6 +37,17 @@ async def _handle_ingest_document(job_id: str, payload: dict) -> None:
     useful: if a worker dies after embedding 150 of 200 chunks, the
     job gets re-queued, but resuming means paying for ~50 more
     embedding calls, not 200 all over again.
+
+    Embedding uses embed_chunks(), which batches many chunks per API
+    call instead of one call per chunk — at real ingestion scale
+    (thousands of chunks), sequential one-at-a-time calls are
+    dominated by network round-trip latency, not embedding compute,
+    so batching is the single biggest lever for making large-corpus
+    ingestion practical. Tradeoff worth naming: progress updates
+    (chunks_processed) now land once per document rather than once
+    per chunk, since embed_chunks() returns all its results together
+    — a fair cost for the throughput win, but less granular live
+    progress during a very large single-document ingestion.
     """
     file_path = payload["file_path"]
     filename = payload["filename"]
@@ -58,18 +69,16 @@ async def _handle_ingest_document(job_id: str, payload: dict) -> None:
             extra={"extra_fields": {"job_id": job_id, "already_done": len(already_done), "total": len(chunks)}},
         )
 
+    remaining = [c for c in chunks if c.index not in already_done]
+    vectors = embed_chunks([c.text for c in remaining])
+
     processed = len(already_done)
     skipped = []
 
     async with async_session() as session:
-        for chunk in chunks:
-            if chunk.index in already_done:
-                continue  # already embedded and stored in a previous attempt
-
-            try:
-                vector = embed_text(chunk.text)
-            except Exception as e:
-                skipped.append({"index": chunk.index, "error": str(e)})
+        for chunk, vector in zip(remaining, vectors):
+            if vector is None:
+                skipped.append({"index": chunk.index, "error": "embedding failed after retries"})
                 continue
 
             session.add(DocumentChunk(
@@ -80,9 +89,9 @@ async def _handle_ingest_document(job_id: str, payload: dict) -> None:
             ))
             processed += 1
             await redis_queue.mark_chunk_done(job_id, chunk.index)
-            await redis_queue.update_status(job_id, chunks_processed=processed)
-            await redis_queue.touch_job(DOCUMENT_QUEUE, job_id)
 
+        await redis_queue.update_status(job_id, chunks_processed=processed)
+        await redis_queue.touch_job(DOCUMENT_QUEUE, job_id)
         await session.commit()
 
     await redis_queue.update_status(
