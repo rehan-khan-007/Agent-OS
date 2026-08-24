@@ -11,6 +11,7 @@ from app.memory.long_term import memory
 from app.database import get_session
 from app.cache.redis_client import get_cached_response, cache_response
 from app.ratelimit.limiter import rate_limit
+from app.observability.tracing import langfuse, is_enabled
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -48,7 +49,39 @@ async def _run_agent(request: AgentRequest, db: AsyncSession) -> tuple[str, list
     user_message = {"role": "user", "content": request.message}
 
     state = {"messages": history + [user_message], "next": ""}
-    result = await agent.ainvoke(state)
+
+    # Wraps the whole agent run in one parent Langfuse observation, so
+    # the model's tool-selection call, the tool execution itself, and
+    # the final response generation all nest under ONE connected trace
+    # per request — without this, each of those was its own separate,
+    # disconnected trace (this is genuine Langfuse SDK v3 behavior:
+    # a start_as_current_observation call with no enclosing parent
+    # always starts its own new trace), making it impossible to see a
+    # full agent run as a single flow in the Langfuse UI.
+    #
+    # result is only ever assigned by calling agent.ainvoke() exactly
+    # once below — the "if result is None" fallback exists so that a
+    # tracing-only failure (setup, or span.update() after a
+    # successful call) can never cause the real agent call to run
+    # TWICE, which would double real cost and could double any
+    # real side effects.
+    result = None
+    if is_enabled():
+        try:
+            with langfuse.start_as_current_observation(
+                as_type="agent",
+                name="agent_run",
+                input=request.message,
+                metadata={"session_id": session_id},
+            ) as span:
+                result = await agent.ainvoke(state)
+                span.update(output=result["messages"][-1].get("content"))
+        except Exception:
+            pass  # tracing must never block the real call
+
+    if result is None:
+        result = await agent.ainvoke(state)
+
     messages = result["messages"]
 
     await memory.extend(session_id, messages[len(history):], db)
