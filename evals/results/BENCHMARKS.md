@@ -265,6 +265,44 @@ logic for the comparison.
 
 ---
 
+## Reliability fixes verified since the initial benchmarks
+
+These aren't new benchmark numbers — they're real correctness/
+reliability bugs found via architecture review and fixed in the same
+systems the results above measure, each verified against real
+infrastructure (not just unit-tested in isolation) before being
+counted as done.
+
+- **CI frontend test gate**: the README claimed 20 frontend tests
+  were CI-gated, but CI only ran backend tests. Fixed and confirmed
+  passing in a real GitHub Actions run (both `test` and
+  `frontend-test` jobs green).
+- **Atomic queue dequeue**: `dequeue()` used to LPOP a job and mark it
+  in-flight as two separate Redis calls — if a worker crashed between
+  them, the job was gone from the queue but never recorded as
+  in-flight, so it could never be reclaimed. Fixed via a single
+  atomic Lua script (LPOP + ZADD in one server-side operation).
+  Verified against real production Upstash: 21/21 queue tests passing.
+- **Checkpoint-before-commit ordering**: `mark_chunk_done()` (Redis)
+  used to run *inside* the same loop that adds chunks to the DB
+  session, while the actual `session.commit()` only happened once at
+  the end. If that commit failed for any reason (a dropped
+  connection, a bad row — the exact NUL-byte bug hit earlier ingesting
+  this project's own corpus), Redis would permanently believe every
+  chunk was durably stored while Postgres held none — a retry would
+  then skip them all forever. Fixed by only checkpointing chunks
+  after a confirmed successful commit. Verified with a dedicated
+  regression test that simulates a failing commit and asserts no
+  chunk gets falsely checkpointed: 70/70 backend tests passing.
+- **`/health/live` and `/health/ready` endpoints**: the only health
+  check previously returned a static `{"status": "ok"}` regardless of
+  whether the database, Redis, required config, or background workers
+  were actually working. `/health/ready` now checks all four for
+  real. Verified live against the deployed production instance:
+  `{"status":"ready","checks":{"database":"ok","redis":"ok","openrouter_api_key":"configured","workers":"3/3 running"}}`.
+
+---
+
 ## What these results do and don't support
 
 These benchmarks together give real evidence that:
