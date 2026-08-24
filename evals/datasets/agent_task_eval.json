@@ -1,0 +1,35 @@
+[
+  {"message": "What is GRAPE and what problem does it solve in quantum control?", "expected_tool": "retrieve"},
+  {"message": "How does artificial intelligence and big data influence entrepreneurship research?", "expected_tool": "retrieve"},
+  {"message": "What is radiative cooling and how is it used for thermal management?", "expected_tool": "retrieve"},
+  {"message": "What should investors know before starting a mutual fund investment journey?", "expected_tool": "retrieve"},
+  {"message": "What is the feedback pulses paradigm for designing NMR pulses?", "expected_tool": "retrieve"},
+  {"message": "What is an Exchange Traded Fund (ETF)?", "expected_tool": "retrieve"},
+  {"message": "How is laser cooling used for thermal management of lightsails?", "expected_tool": "retrieve"},
+  {"message": "What are corporate bonds and how do they work?", "expected_tool": "retrieve"},
+  {"message": "How does institutional context affect the gender gap in entrepreneurship?", "expected_tool": "retrieve"},
+  {"message": "What is the KYC procedure for opening an account in the securities market?", "expected_tool": "retrieve"},
+
+  {"message": "What is 4738 multiplied by 291?", "expected_tool": "calculator"},
+  {"message": "What is the square root of 15129?", "expected_tool": "calculator"},
+  {"message": "Calculate 15% of 8400.", "expected_tool": "calculator"},
+  {"message": "What is 987654 divided by 42?", "expected_tool": "calculator"},
+  {"message": "What is 2 to the power of 17?", "expected_tool": "calculator"},
+  {"message": "What is the sum of 12345 and 67890?", "expected_tool": "calculator"},
+  {"message": "If I invest $5000 at 7% annual simple interest for 3 years, how much interest do I earn?", "expected_tool": "calculator"},
+  {"message": "What is 999 multiplied by 999?", "expected_tool": "calculator"},
+  {"message": "Convert 45 degrees Celsius to Fahrenheit.", "expected_tool": "calculator"},
+  {"message": "What is the factorial of 8?", "expected_tool": "calculator"},
+
+  {"message": "What is the current price of Bitcoin in USD right now?", "expected_tool": "web_search"},
+  {"message": "Who is the current Prime Minister of the United Kingdom?", "expected_tool": "web_search"},
+  {"message": "What are today's top news headlines?", "expected_tool": "web_search"},
+  {"message": "What is the latest stable version of Python?", "expected_tool": "web_search"},
+  {"message": "What is the current weather in Mumbai right now?", "expected_tool": "web_search"},
+
+  {"message": "What is the capital of France?", "expected_tool": "none"},
+  {"message": "Explain what a neural network is in simple terms.", "expected_tool": "none"},
+  {"message": "Hi, how are you?", "expected_tool": "none"},
+  {"message": "What's the difference between a list and a tuple in Python?", "expected_tool": "none"},
+  {"message": "Write a haiku about the ocean.", "expected_tool": "none"}
+]
