@@ -226,6 +226,45 @@ success/failure batch.
 
 ---
 
+## Retrieval ablation (dense vs BM25 vs hybrid)
+
+**What was measured:** source-level recall@3 for three retrieval
+methods run in isolation — BM25-only, dense (pgvector cosine)-only,
+and the production hybrid (RRF-fused) pipeline — against the same
+35-question dataset used elsewhere in this document. Directly closes
+a real, named gap: the earlier 94.3% hybrid result had no baseline
+to compare against.
+
+**How:** `evals/runners/retrieval_ablation.py`, calling the actual
+production retrieval functions (`_vector_search_ranked`, `bm25_search`,
+`hybrid_search`) in isolation rather than reimplementing retrieval
+logic for the comparison.
+
+**Result (Aug 24, 2026):**
+
+| Method | Recall@3 |
+|---|---|
+| BM25-only | 32/35 (91.4%) |
+| Dense-only | 33/35 (94.3%) |
+| Hybrid (RRF) | 33/35 (94.3%) |
+
+**Honest read of this result, not spun toward the expected answer:**
+- BM25 alone clearly trails both vector-based methods — a real,
+  meaningful ~3-point gap.
+- Hybrid did **not** outperform dense-only on this dataset — they
+  tied numerically. This is reported as-is rather than framed as an
+  unambiguous win for hybrid, since it wasn't one here.
+- A real nuance worth naming: despite the tied count, hybrid and
+  dense-only missed *different* questions (hybrid missed a
+  comparative question dense-only got right, and vice versa for a
+  different question) — the two methods aren't behaviorally
+  identical, just numerically tied at this sample size. With only 35
+  questions, one question is worth ~2.9 percentage points, so a tie
+  here reflects real small-sample variance, not proof the methods
+  are equivalent in general.
+
+---
+
 ## What these results do and don't support
 
 These benchmarks together give real evidence that:
@@ -244,6 +283,10 @@ These benchmarks together give real evidence that:
   correctly with no cross-request state leakage, and the rate
   limiter has now been confirmed working under real, unplanned
   traffic overlap, not just a synthetic test
+- hybrid retrieval's recall advantage over BM25 alone is real and
+  measured (not assumed); its advantage over dense-only specifically
+  was not demonstrated on this dataset — reported honestly rather
+  than omitted
 
 They do **not** by themselves demonstrate performance at the scale
 of hundreds of concurrent users or long-running multi-step agent
