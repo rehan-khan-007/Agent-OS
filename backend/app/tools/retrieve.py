@@ -6,13 +6,20 @@ from app.retrieval.hybrid import hybrid_search
 class RetrieveTool(BaseTool):
     name = "retrieve"
     description = (
-        "Search the user's document library for information relevant to a query. "
-        "This includes any files the user has uploaded through the chat interface "
-        "(PDF, TXT, or MD), as well as any other documents already ingested into "
-        "the system. Always use this tool when the user refers to something they "
-        "uploaded, attached, or added, or when you need facts or context from "
-        "stored documents to answer their question — you do not have direct file "
-        "access, so this tool is the only way to read uploaded content."
+        "Search AgentOS's persistent knowledge base — a standing corpus of "
+        "documents (research papers, official reference material, and any "
+        "files uploaded through the chat interface), not just the current "
+        "session's uploads. Use this tool whenever the user's question is "
+        "likely to be answered or supported by the stored documents — "
+        "especially domain-specific, factual, or reference-style questions "
+        "— and prefer retrieved evidence over relying solely on your own "
+        "training knowledge when the corpus may contain the answer. Don't "
+        "call this for general conversation, pure calculation, or questions "
+        "the corpus clearly wouldn't cover. Note: stored documents have a "
+        "fixed publication date and may be outdated — if the user is asking "
+        "for the latest, current, or most recent information on a topic, "
+        "say so explicitly in your answer rather than presenting retrieved "
+        "material as necessarily up to date."
     )
 
     async def run(self, query: str, top_k: int = 3) -> ToolResult:
