@@ -74,6 +74,19 @@ async def _handle_ingest_document(job_id: str, payload: dict) -> None:
 
     processed = len(already_done)
     skipped = []
+    # Indices actually added to the session this round — checkpointed
+    # only after the commit below succeeds, not before. Checkpointing
+    # per-chunk *inside* this loop (as an earlier version of this code
+    # did) is a real correctness bug: mark_chunk_done() would succeed
+    # in Redis for every chunk before the single session.commit() at
+    # the end ever ran. If that commit failed for any reason (a
+    # dropped connection, a bad row — see the NUL-byte bug found
+    # earlier ingesting this project's own corpus), Redis would
+    # permanently believe every chunk was durably stored while
+    # Postgres held zero of them — and a retry would skip them all
+    # forever, since the checkpoint says "already done". Checkpoint
+    # writes now only happen after commit() has actually succeeded.
+    newly_committed_indices = []
 
     async with async_session() as session:
         for chunk, vector in zip(remaining, vectors):
@@ -88,11 +101,18 @@ async def _handle_ingest_document(job_id: str, payload: dict) -> None:
                 embedding=vector,
             ))
             processed += 1
-            await redis_queue.mark_chunk_done(job_id, chunk.index)
+            newly_committed_indices.append(chunk.index)
 
         await redis_queue.update_status(job_id, chunks_processed=processed)
         await redis_queue.touch_job(DOCUMENT_QUEUE, job_id)
         await session.commit()
+
+    # Only reached if commit() above did not raise — if it did, the
+    # exception propagates out of this handler, _process_job() marks
+    # the job "failed", and reclaim can retry it from a checkpoint
+    # that (correctly) still shows none of these chunks as done.
+    for index in newly_committed_indices:
+        await redis_queue.mark_chunk_done(job_id, index)
 
     await redis_queue.update_status(
         job_id,
