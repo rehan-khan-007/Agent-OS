@@ -9,13 +9,13 @@ from app.api.health import router as health_router
 from app.api.agents import router as agents_router
 from app.api.documents import router as documents_router
 from app.queue.worker import worker_loop, reclaim_loop, DOCUMENT_QUEUE
+from app.worker_state import worker_tasks
 
 configure_logging()
 logger = get_logger(__name__)
 
 NUM_WORKERS = 2
 
-_worker_tasks: list[asyncio.Task] = []
 _stop_event = asyncio.Event()
 
 
@@ -27,17 +27,17 @@ async def lifespan(app: FastAPI):
         task = asyncio.create_task(
             worker_loop(DOCUMENT_QUEUE, worker_id=f"doc-worker-{i}", stop_event=_stop_event)
         )
-        _worker_tasks.append(task)
+        worker_tasks.append(task)
     logger.info("Started background workers", extra={"extra_fields": {"count": NUM_WORKERS}})
 
     reclaim_task = asyncio.create_task(reclaim_loop(DOCUMENT_QUEUE, stop_event=_stop_event))
-    _worker_tasks.append(reclaim_task)
+    worker_tasks.append(reclaim_task)
 
     yield
 
     logger.info("Agent-OS shutting down, stopping workers")
     _stop_event.set()
-    await asyncio.gather(*_worker_tasks, return_exceptions=True)
+    await asyncio.gather(*worker_tasks, return_exceptions=True)
 
 app = FastAPI(title="Agent-OS", version="0.1.0", lifespan=lifespan)
 
