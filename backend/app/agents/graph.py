@@ -8,6 +8,7 @@ from app.tools.calculator import CalculatorTool
 from app.tools.retrieve import RetrieveTool
 from app.llm.client import chat_completion, extract_choice
 from app.tools.web_search import WebSearchTool
+from app.observability.tracing import langfuse, is_enabled
 
 
 # ── State ──────────────────────────────────────────────────
@@ -34,7 +35,30 @@ async def _run_tool_call(tool_name: str, args: dict) -> ToolResult:
     tool = TOOLS.get(tool_name)
     if tool is None:
         return ToolResult(output=None, error=f"Unknown tool: {tool_name}")
-    return await tool.run(**args)
+
+    # Tool execution previously had zero tracing at all — only the
+    # LLM calls before/after it showed up in Langfuse, so a trace
+    # never showed whether a tool ran, which one, or what it
+    # returned. Same defensive "result is None" fallback pattern as
+    # agents.py: tracing failure can never cause the real tool call
+    # to run twice.
+    result = None
+    if is_enabled():
+        try:
+            with langfuse.start_as_current_observation(
+                as_type="tool",
+                name=tool_name,
+                input=args,
+            ) as span:
+                result = await tool.run(**args)
+                span.update(output=result.output if result.success else f"Error: {result.error}")
+        except Exception:
+            pass
+
+    if result is None:
+        result = await tool.run(**args)
+
+    return result
 
 
 # ── Nodes ──────────────────────────────────────────────────
