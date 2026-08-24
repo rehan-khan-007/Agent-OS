@@ -32,6 +32,25 @@ JOB_DATA_KEY_PREFIX = "job_data:"
 INFLIGHT_KEY_PREFIX = "inflight:"
 STATUS_TTL_SECONDS = 60 * 60 * 24  # keep job status visible for 24h
 
+# Atomically pops a job and marks it in-flight in a single Redis-side
+# operation. Doing this as two separate client calls (LPOP, then ZADD)
+# leaves a real crash window: if the worker process dies between the
+# two calls, the job is already gone from the queue but was never
+# recorded as in-flight, so reclaim_stale_jobs() can never find it —
+# a genuinely lost job with no code path back. Redis guarantees a Lua
+# script runs atomically on the server; a crashing client can't
+# interrupt it mid-script the way it could interrupt two separate
+# round-trips.
+_DEQUEUE_AND_MARK_INFLIGHT_SCRIPT = """
+local raw_job = redis.call('LPOP', KEYS[1])
+if raw_job == false then
+  return false
+end
+local job = cjson.decode(raw_job)
+redis.call('ZADD', KEYS[2], ARGV[1], job['job_id'])
+return raw_job
+"""
+
 
 class QueueUnavailableError(RuntimeError):
     """Raised when Redis isn't configured/reachable — queue operations
@@ -102,19 +121,25 @@ async def dequeue(queue_name: str, timeout: int = 5) -> dict | None:
     so callers don't need to change.
 
     On a successful pop, the job is marked "in-flight" (a sorted set
-    of queue_name -> {job_id: dequeued_timestamp}). This is how
-    reclaim_stale_jobs() later notices a job whose worker died before
-    finishing — mark_job_complete() removes it from this set on
-    success, so anything still present after a staleness threshold is
-    presumed abandoned.
+    of queue_name -> {job_id: dequeued_timestamp}) — atomically, via
+    a single Lua script (see _DEQUEUE_AND_MARK_INFLIGHT_SCRIPT), not
+    two separate LPOP/ZADD calls. This is how reclaim_stale_jobs()
+    later notices a job whose worker died before finishing —
+    mark_job_complete() removes it from this set on success, so
+    anything still present after a staleness threshold is presumed
+    abandoned.
     """
     client = get_client()
-    raw_job = await client.lpop(queue_name)
-    if raw_job is None:
+    raw_job = await client.eval(
+        _DEQUEUE_AND_MARK_INFLIGHT_SCRIPT,
+        2,
+        queue_name,
+        f"{INFLIGHT_KEY_PREFIX}{queue_name}",
+        time.time(),
+    )
+    if not raw_job:
         return None
-    job = json.loads(raw_job)
-    await client.zadd(f"{INFLIGHT_KEY_PREFIX}{queue_name}", {job["job_id"]: time.time()})
-    return job
+    return json.loads(raw_job)
 
 
 async def mark_job_complete(queue_name: str, job_id: str) -> None:
