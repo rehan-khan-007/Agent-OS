@@ -20,6 +20,9 @@ import asyncio
 import boto3
 
 from app.config import settings
+from app.observability.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def is_configured() -> bool:
@@ -50,6 +53,7 @@ async def upload_bytes(key: str, data: bytes) -> None:
         client = _get_client()
         client.put_object(Bucket=settings.r2_bucket_name, Key=key, Body=data)
     await asyncio.to_thread(_upload)
+    logger.info("Uploaded object to R2", extra={"extra_fields": {"key": key, "bytes": len(data)}})
 
 
 async def download_to_path(key: str, local_path: str) -> None:
@@ -60,6 +64,7 @@ async def download_to_path(key: str, local_path: str) -> None:
         client = _get_client()
         client.download_file(settings.r2_bucket_name, key, local_path)
     await asyncio.to_thread(_download)
+    logger.info("Downloaded object from R2", extra={"extra_fields": {"key": key, "local_path": local_path}})
 
 
 async def delete_object(key: str) -> None:
@@ -71,3 +76,4 @@ async def delete_object(key: str) -> None:
         client = _get_client()
         client.delete_object(Bucket=settings.r2_bucket_name, Key=key)
     await asyncio.to_thread(_delete)
+    logger.info("Deleted object from R2", extra={"extra_fields": {"key": key}})
