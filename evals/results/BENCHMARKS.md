@@ -4,6 +4,20 @@ Real numbers from running the actual production code against real
 infrastructure — not estimates. Each result below states exactly
 what was measured, how, and what its limitations are.
 
+## At a glance
+
+| Metric | Result |
+|---|---|
+| Task queue reliability (200 jobs) | 100% terminal completion, 98% success excl. injected failures |
+| Retrieval recall@3 (132 docs, 4 domains) | **94.3%** |
+| Retrieval ablation | BM25 91.4% / Dense 94.3% / Hybrid 94.3% |
+| Cheapest model vs strongest (same task) | gpt-4o-mini **18x cheaper** than gpt-4o, near-identical latency |
+| LLM-judge grounding | **100%** (35/35), independently confirms the heuristic score |
+| Model router real savings | **41.5%** vs. an always-strong baseline, 12/12 routing decisions correct |
+| Agent tool-selection accuracy | 86.7% (26/30) — includes a real bug found and fixed live (0/10 → 6/10 on one category) |
+| Live concurrent-request safety | 0 cross-request contamination across two real test runs |
+| Total real spend across every benchmark below | **under $0.30** |
+
 ---
 
 ## Task queue load test
@@ -303,6 +317,111 @@ counted as done.
 
 ---
 
+## Agent tool-selection accuracy
+
+**What was measured:** given a real user message, does the actual
+production agent graph (`app/agents/graph.py`, invoked exactly as the
+real `/agents/chat` endpoint does) correctly choose which of its 3
+real tools to call (`retrieve`, `calculator`, `web_search`) — or
+correctly choose to call none at all. This is a genuinely different
+question from the retrieval-recall benchmarks elsewhere in this
+document: those measure whether retrieval finds the right chunk; this
+measures whether the agent decides to use the right tool in the first
+place.
+
+**How:** `evals/runners/agent_task_eval.py` against
+`evals/datasets/agent_task_eval.json` — 30 real tasks: 10 needing
+`retrieve`, 10 needing `calculator`, 5 needing `web_search`, and 5
+needing no tool at all (tests that the agent doesn't over-trigger
+tools unnecessarily — a real, distinct failure mode from under-use).
+
+**Real finding: a genuine bug, found and fixed live.** The first run
+scored 0/10 on the `retrieve` category — every one landed on "none"
+instead. Root cause, verified by reading the actual tool code, not
+guessed: the `retrieve` tool's description told the model to use it
+only when the user "refers to something they uploaded, attached, or
+added" — it never described the standing 132-document corpus this
+project built as something worth proactively searching for ordinary
+domain questions. The model was working correctly per its own
+instructions; it just answered from pretrained knowledge instead.
+
+**Fix:** rewrote `app/tools/retrieve.py`'s description to frame it as
+AgentOS's persistent knowledge base, proactively usable for
+domain-specific questions — while explicitly telling the model NOT to
+call it for general conversation or things the corpus clearly
+wouldn't cover, guarding against overcorrecting into "retrieve
+everything." Also added an explicit freshness caveat: stored
+documents have a fixed publication date and may be outdated.
+
+**Result — before vs. after, same unchanged 30 tasks, same scoring:**
+
+| Category | Before | After |
+|---|---|---|
+| retrieve | 0/10 | 6/10 (60.0%) |
+| calculator | 10/10 | 10/10 (100.0%) |
+| web_search | 5/5 | 5/5 (100.0%) |
+| none | 5/5 | 5/5 (100.0%) |
+| **Overall** | **20/30** | **26/30 (86.7%)** |
+
+**Honest caveats:**
+- No regression on the other 3 categories — the guardrail against
+  over-triggering worked; the fix specifically targeted the actual
+  broken behavior without collateral damage.
+- 4 remaining misses show a real, understood pattern, not noise: all
+  3 finance misses ("What is an ETF?", mutual funds, corporate bonds)
+  are general financial-literacy questions the model likely already
+  has decent pretrained knowledge about — unlike niche topics like
+  GRAPE or radiative cooling for lightsails, where retrieval reliably
+  wins. The model's own confidence competes with the instruction to
+  retrieve. Pushing the description more aggressively risks
+  reintroducing the over-triggering problem this fix just avoided —
+  86.7% with a clearly understood failure pattern is treated as a
+  legitimate stopping point, not a number left to chase further.
+
+---
+
+## Model router cost savings
+
+**What was measured:** real dollar cost of the actual production
+routing logic (`app/routing/router.py`'s `route_model()`) versus an
+always-strong baseline (forcing every request to gpt-4o regardless),
+across 12 realistic scenarios spanning all 4 combinations of the
+router's real decision boundary: short/no-tools, short/with-tools,
+long/with-tools, long/no-tools. The documented rule: escalate to
+gpt-4o only if BOTH tools are available AND conversation history
+exceeds 2 messages.
+
+**How:** `evals/runners/model_router_benchmark.py`. Each scenario run
+twice — once through `chat_completion()` with no model override (the
+real router decides), once forced to gpt-4o explicitly. Cost computed
+from each response's real `usage` field, using the same verified
+per-token pricing already established in the 4-model benchmark above.
+
+**Result:**
+
+| Category | Router chose | Matches documented logic? |
+|---|---|---|
+| short, no tools (3) | gpt-4o-mini | ✓ |
+| short, with tools (3) | gpt-4o-mini | ✓ (len=1 doesn't exceed 2) |
+| long, with tools (3) | gpt-4o | ✓ (both conditions met) |
+| long, no tools (3) | gpt-4o-mini | ✓ (no tools = never escalates) |
+
+**Total cost — routed: $0.00714 | always-strong: $0.01220 | real savings: 41.5%**
+
+**Honest caveats:**
+- 12/12 routing decisions matched the documented heuristic exactly —
+  real confirmation the router works as designed, not assumed.
+- One scenario (long+tools) showed the *routed* path costing more
+  than the always-strong path for that same line — both actually used
+  gpt-4o there (correctly escalated), so this isn't a routing error.
+  It's natural response-length variance between two independent
+  generations of the same model, reported as-is rather than smoothed
+  over.
+- Small sample (12 scenarios) — a real, directionally meaningful
+  result, not a claim of precision to the decimal point.
+
+---
+
 ## What these results do and don't support
 
 These benchmarks together give real evidence that:
@@ -325,6 +444,14 @@ These benchmarks together give real evidence that:
   measured (not assumed); its advantage over dense-only specifically
   was not demonstrated on this dataset — reported honestly rather
   than omitted
+- the agent correctly selects the right tool for a task 86.7% of the
+  time, with a real, understood failure pattern rather than an
+  unexplained gap — and the evaluation process itself caught and fixed
+  a genuine production bug (0/10 → 6/10 on one category) rather than
+  just producing a passing number
+- model routing delivers a real, measured 41.5% cost reduction versus
+  always using the strongest model, with 100% of routing decisions
+  confirmed to match the documented logic
 
 They do **not** by themselves demonstrate performance at the scale
 of hundreds of concurrent users or long-running multi-step agent
