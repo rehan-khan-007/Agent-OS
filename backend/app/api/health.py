@@ -27,6 +27,7 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.database import async_session
+from app.storage import r2_client
 from app.worker_state import worker_tasks
 
 router = APIRouter()
@@ -76,6 +77,12 @@ async def readiness():
     checks["workers"] = f"{alive_workers}/{total_workers} running"
     if total_workers > 0 and alive_workers == 0:
         healthy = False
+
+    # Deliberately does NOT affect `healthy` — the app works correctly
+    # either way (falls back to local-path uploads if not configured),
+    # so this is purely visibility into which mode is actually active,
+    # not a requirement for readiness.
+    checks["r2_storage"] = "configured" if r2_client.is_configured() else "not configured (using local fallback)"
 
     status_code = 200 if healthy else 503
     return JSONResponse(
