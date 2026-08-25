@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from app.queue.redis_queue import enqueue, get_status, QueueUnavailableError
 from app.queue.worker import DOCUMENT_QUEUE
 from app.ratelimit.limiter import rate_limit
+from app.storage import r2_client
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -65,14 +66,27 @@ async def upload_document(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
     tmp_id = str(uuid.uuid4())
-    tmp_path = Path(tempfile.gettempdir()) / f"{tmp_id}{suffix}"
-    tmp_path.write_bytes(contents)
+
+    if r2_client.is_configured():
+        # Real, distributed-worker-safe path: store the upload in R2
+        # and pass its object key through the queue, instead of a
+        # local path that would only ever exist on this one process.
+        r2_key = f"uploads/{tmp_id}{suffix}"
+        await r2_client.upload_bytes(r2_key, contents)
+        payload = {"r2_key": r2_key, "filename": file.filename}
+    else:
+        # Local-dev fallback when R2 isn't configured — preserves the
+        # previous behavior so local development doesn't require R2
+        # credentials just to test document ingestion.
+        tmp_path = Path(tempfile.gettempdir()) / f"{tmp_id}{suffix}"
+        tmp_path.write_bytes(contents)
+        payload = {"file_path": str(tmp_path), "filename": file.filename}
 
     try:
         job_id = await enqueue(
             DOCUMENT_QUEUE,
             job_type="ingest_document",
-            payload={"file_path": str(tmp_path), "filename": file.filename},
+            payload=payload,
             filename=file.filename,
         )
     except QueueUnavailableError as e:
