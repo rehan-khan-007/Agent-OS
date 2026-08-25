@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,7 @@ from app.database import get_session
 from app.cache.redis_client import get_cached_response, cache_response
 from app.ratelimit.limiter import rate_limit
 from app.observability.tracing import langfuse, is_enabled
+from app.auth.session_tokens import issue_token, verify_token, SessionAuthError
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -25,25 +26,43 @@ CHAT_RATE_LIMIT = rate_limit("agents_chat", limit=20, window_seconds=300)
 class AgentRequest(BaseModel):
     message: str
     session_id: str | None = None
+    session_token: str | None = None
 
 
 class AgentResponse(BaseModel):
     response: str
     session_id: str
+    session_token: str
     messages: list[dict]
     cached: bool = False
 
 
-async def _run_agent(request: AgentRequest, db: AsyncSession) -> tuple[str, list[dict], bool]:
+async def _run_agent(request: AgentRequest, db: AsyncSession) -> tuple[str, str, list[dict], bool]:
     """Runs the agent for a request, using cache if an identical
     (session_id, message) pair was submitted within the idempotency
-    window. Returns (session_id, messages, was_cached)."""
+    window. Returns (session_id, session_token, messages, was_cached).
+
+    Session-ownership check: a brand-new session (no session_id
+    supplied) gets a freshly issued token. Continuing an EXISTING
+    session requires presenting the matching token — without this, a
+    leaked session_id alone (server logs, browser history, a shared
+    screenshot) would let anyone read or continue someone else's
+    conversation. Raises SessionAuthError on a missing/invalid token,
+    which callers convert to a 403.
+    """
+    is_new_session = request.session_id is None
     session_id = request.session_id or str(uuid.uuid4())
+
+    if is_new_session:
+        session_token = await issue_token(session_id)
+    else:
+        await verify_token(session_id, request.session_token)
+        session_token = request.session_token
 
     if request.session_id:
         cached = await get_cached_response(session_id, request.message)
         if cached is not None:
-            return session_id, cached["messages"], True
+            return session_id, session_token, cached["messages"], True
 
     history = await memory.get_history(session_id, db)
     user_message = {"role": "user", "content": request.message}
@@ -87,14 +106,17 @@ async def _run_agent(request: AgentRequest, db: AsyncSession) -> tuple[str, list
     await memory.extend(session_id, messages[len(history):], db)
     await cache_response(session_id, request.message, {"messages": messages})
 
-    return session_id, messages, False
+    return session_id, session_token, messages, False
 
 
 @router.post("/chat", response_model=AgentResponse, dependencies=[Depends(CHAT_RATE_LIMIT)])
 async def chat(request: AgentRequest, db: AsyncSession = Depends(get_session)):
-    session_id, messages, was_cached = await _run_agent(request, db)
+    try:
+        session_id, session_token, messages, was_cached = await _run_agent(request, db)
+    except SessionAuthError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     last = messages[-1]["content"] if messages else ""
-    return AgentResponse(response=last, session_id=session_id, messages=messages, cached=was_cached)
+    return AgentResponse(response=last, session_id=session_id, session_token=session_token, messages=messages, cached=was_cached)
 
 
 def _sse(data: dict) -> str:
@@ -119,12 +141,15 @@ def _extract_tool_calls(messages: list[dict]) -> list[dict]:
 
 @router.post("/chat/stream", dependencies=[Depends(CHAT_RATE_LIMIT)])
 async def chat_stream(request: AgentRequest, db: AsyncSession = Depends(get_session)):
-    session_id, messages, was_cached = await _run_agent(request, db)
+    try:
+        session_id, session_token, messages, was_cached = await _run_agent(request, db)
+    except SessionAuthError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     final_text = messages[-1]["content"] if messages else ""
     tool_calls = _extract_tool_calls(messages)
 
     async def event_stream():
-        yield _sse({"type": "session", "session_id": session_id})
+        yield _sse({"type": "session", "session_id": session_id, "session_token": session_token})
 
         for call in tool_calls:
             yield _sse({"type": "tool_call", "name": call["name"], "arguments": call["arguments"]})

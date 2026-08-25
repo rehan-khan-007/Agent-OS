@@ -30,6 +30,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [upload, setUpload] = useState<UploadState>({ status: "idle" });
   const [connection, setConnection] = useState<ConnectionState>("checking");
@@ -81,7 +82,7 @@ export default function ChatPage() {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/agents/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: input, session_id: sessionId }),
+        body: JSON.stringify({ message: input, session_id: sessionId, session_token: sessionToken }),
       });
 
       if (!res.body) throw new Error("No response body");
@@ -104,6 +105,7 @@ export default function ChatPage() {
         for (const evt of events) {
           if (evt.type === "session") {
             setSessionId(evt.session_id as string);
+            if (evt.session_token) setSessionToken(evt.session_token as string);
           } else if (evt.type === "tool_call") {
             toolCalls = [...toolCalls, { name: evt.name as string, arguments: evt.arguments as string }];
             if (!started) {
