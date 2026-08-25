@@ -32,6 +32,7 @@ langfuse
 pgvector
 rank_bm25
 pypdf
+boto3
 
 # Testing
 pytest

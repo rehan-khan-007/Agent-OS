@@ -11,6 +11,9 @@ payload dict, register it in HANDLERS, done.
 """
 
 import asyncio
+import tempfile
+import uuid
+from pathlib import Path
 
 from app.database import async_session
 from app.observability.logging import get_logger
@@ -20,6 +23,7 @@ from app.retrieval.ingestion import load_document
 from app.retrieval.chunking import chunk_text
 from app.retrieval.embeddings import embed_chunks
 from app.retrieval.models import DocumentChunk
+from app.storage import r2_client
 
 logger = get_logger(__name__)
 
@@ -49,8 +53,9 @@ async def _handle_ingest_document(job_id: str, payload: dict) -> None:
     — a fair cost for the throughput win, but less granular live
     progress during a very large single-document ingestion.
     """
-    file_path = payload["file_path"]
     filename = payload["filename"]
+    r2_key = payload.get("r2_key")
+    file_path = payload.get("file_path")
 
     already_done = await redis_queue.get_completed_chunks(job_id)
     resuming = len(already_done) > 0
@@ -59,7 +64,27 @@ async def _handle_ingest_document(job_id: str, payload: dict) -> None:
         job_id, status="processing", chunks_processed=len(already_done), chunks_total=0
     )
 
-    text = load_document(file_path)
+    # If this job's payload references an R2 object (the normal case
+    # once R2 is configured) rather than a local file_path (local-dev
+    # fallback), download it to a fresh local temp file first — the
+    # text-extraction libraries this project uses read from a real
+    # local path, not a byte stream. On a resumed/retried job, this
+    # correctly re-downloads rather than assuming a previous worker's
+    # local temp copy still exists — it wouldn't, if that worker died
+    # or ran on a different machine.
+    downloaded_temp_path = None
+    if r2_key:
+        suffix = Path(filename).suffix
+        downloaded_temp_path = str(Path(tempfile.gettempdir()) / f"{uuid.uuid4()}{suffix}")
+        await r2_client.download_to_path(r2_key, downloaded_temp_path)
+        file_path = downloaded_temp_path
+
+    try:
+        text = load_document(file_path)
+    finally:
+        if downloaded_temp_path:
+            Path(downloaded_temp_path).unlink(missing_ok=True)
+
     chunks = chunk_text(text, chunk_size=1000, overlap=100)
     await redis_queue.update_status(job_id, chunks_total=len(chunks))
 
@@ -121,6 +146,11 @@ async def _handle_ingest_document(job_id: str, payload: dict) -> None:
         skipped_chunks=skipped,
     )
     await redis_queue.clear_checkpoint(job_id)
+
+    if r2_key:
+        # Safe to delete now — ingestion fully succeeded, so this
+        # source file will never need to be re-downloaded for a retry.
+        await r2_client.delete_object(r2_key)
 
 
 HANDLERS = {
