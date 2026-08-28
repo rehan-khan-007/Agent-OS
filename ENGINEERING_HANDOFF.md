@@ -988,3 +988,901 @@ specific result.
 hundreds of concurrent users, or the behavior of genuinely long-running
 multi-step agent workflows (since none currently exist to benchmark —
 see Section 5's finding that no multi-hop tool loop exists yet).
+
+# AgentOS Engineering Handoff — Part 4: Decisions, Debt, Risks, Roadmap
+
+## 21. Architectural Decisions (ADR-style)
+
+Every decision below reflects a real, actual choice made in this
+project's history (Section 2), not a hypothetical alternative
+invented for this document.
+
+### ADR-1: PostgreSQL + pgvector for both relational and vector data
+**Context:** needed both structured storage (conversations, chunks)
+and semantic vector search.
+**Options considered:** a dedicated vector database (Pinecone,
+Weaviate, Qdrant) alongside a separate relational database; or
+pgvector inside the already-necessary relational database.
+**Chosen:** pgvector inside Postgres.
+**Why:** avoids running/paying for/operating two separate database
+systems; real evidence this held up — the HNSW index (Phase 9) gave
+real, adequate vector search performance at 7,748 chunks without ever
+needing a dedicated vector DB.
+**Trade-offs:** a dedicated vector DB might outperform pgvector at
+much larger scale (see Section 27, Architectural Ceiling); accepted
+as a real, currently-non-binding limitation.
+**Current validity:** sound at current scale. **Revisit condition:**
+if corpus size grows by roughly 1-2 orders of magnitude and HNSW
+query latency becomes a measured bottleneck.
+
+### ADR-2: Redis (Upstash) as a multi-purpose infrastructure layer
+**Context:** needed a job queue, a cache, rate limiting, and later,
+session-ownership token storage.
+**Options considered:** separate purpose-built services for each
+(e.g., a dedicated queue service, a dedicated rate-limiting service).
+**Chosen:** one Redis instance, serving all four purposes via
+different key prefixes/data structures.
+**Why:** pragmatic — each individual purpose's data volume is small;
+consolidating avoids operational overhead of managing multiple
+services for a project at this scale.
+**Trade-offs:** a real production incident (BM25 quota exhaustion,
+Section 11 bug #1) was actually a *Postgres* transfer issue, not
+Redis, but the broader lesson (shared infrastructure needs care about
+which subsystem is doing what) applies. The fail-open/fail-closed
+split (Section 10) is the direct, correct answer to "does
+multi-purposing Redis create risk" — verified real and intentional,
+not an oversight.
+**Current validity:** sound. **Revisit condition:** if queue volume
+or cache volume individually grow enough to threaten each other's
+performance (e.g., a very large cache eviction pattern disrupting
+queue latency) — not currently observed.
+
+### ADR-3: Cloudflare R2 for object storage, with a local-path fallback
+**Context:** document uploads needed to work correctly regardless of
+which process/machine handles ingestion (Section 9).
+**Options considered:** AWS S3 (real alternative considered and
+rejected — Section 9's history: S3's free tier is time-limited to 12
+months and charges real egress fees; R2's free tier is permanent with
+zero egress fees).
+**Chosen:** Cloudflare R2, S3-compatible API.
+**Why:** directly, empirically justified — not a guess. The specific
+free-tier terms (10GB storage, 1M writes, 10M reads/month, permanent,
+zero egress) were verified via real research before choosing, and
+this project's real usage (occasional document uploads) is nowhere
+near those limits.
+**Trade-offs:** no hard spending cap exists on Cloudflare (confirmed
+via real research — only an informational budget alert), a real,
+accepted residual risk given the codebase's naturally bounded R2
+usage pattern (rate-limited uploads, one download/delete per
+ingestion job — not an unbounded-scaling risk the way the original
+BM25 bug was).
+**Current validity:** sound. **Revisit condition:** none currently
+identified.
+
+### ADR-4: LangGraph for the agent runtime
+**Context:** needed a framework for the model-decides-then-optionally-
+calls-a-tool loop.
+**Options considered:** **NOT VERIFIED / historical** — no evidence
+in this pass of a documented comparison against a hand-rolled
+state machine or an alternative framework; this was very likely a
+Phase 1 (earliest) choice never revisited.
+**Chosen:** LangGraph.
+**Why:** **INFERRED** — provides a structured way to define
+model/tool/respond nodes and conditional edges, which the actual
+current graph structure (Section 5) directly uses.
+**Trade-offs:** the current graph's single biggest limitation (no
+loop back from tool to model, Section 5) is a design choice made
+WITHIN LangGraph's own capabilities, not a limitation of LangGraph
+itself — LangGraph supports cyclic graphs; AgentOS's current graph
+simply does not use one yet. This is worth being precise about: the
+framework is not the blocker for iterative tool use; the graph
+definition is.
+**Current validity:** sound. **Revisit condition:** none — the
+framework is not what needs to change to add iterative tool use.
+
+### ADR-5: OpenRouter as the LLM gateway
+**Context:** needed access to multiple model providers (OpenAI,
+Anthropic, Google) for the 4-model benchmark and routing.
+**Chosen:** OpenRouter, a single gateway.
+**Why:** **INFERRED** — one API/one key instead of three separate
+provider SDKs and credential sets; directly enabled the 4-model
+benchmark and routing work without needing three sets of provider
+credentials.
+**Trade-offs:** an intermediary layer between AgentOS and each real
+provider — **NOT VERIFIED** whether this adds meaningful latency
+overhead versus calling providers directly (not measured in any
+benchmark to date).
+**Current validity:** sound, real evidence of value (routing,
+multi-model benchmarking both depend on it). **Revisit condition:**
+if OpenRouter-specific latency overhead is ever measured and found
+significant.
+
+### ADR-6: Heuristic model routing (tool presence + message count)
+**Context:** wanted real cost savings without the complexity of a
+learned/adaptive router.
+**Chosen:** the simple rule in Section 12.
+**Why:** empirically validated AFTER the fact, not before — the
+router was built first as a reasonable guess, then genuinely
+benchmarked (Section 16, item 8): 41.5% real savings, 12/12 correct
+routing decisions.
+**Trade-offs:** explicitly self-documented in the code as "a
+starting point" — does not adapt to actual task complexity beyond
+the two simple signals it checks.
+**Current validity:** sound, empirically justified for current use.
+**Revisit condition:** if request patterns diversify beyond what the
+two-signal heuristic can distinguish (e.g., long single-message
+requests that need the strong model but don't trigger the current
+rule).
+
+### ADR-7: Hybrid retrieval (BM25 + dense, RRF-fused) over dense-only
+**Context:** the original retrieval implementation (Phase 2) was
+dense-vector-only.
+**Chosen:** added BM25 and RRF fusion (Phase 7).
+**Why:** the retrieval ablation (Section 16, item 6) is the real,
+honest justification — and honestly, it complicates the simple
+narrative: BM25 alone measurably trails (91.4% vs 94.3%), but hybrid
+TIED dense-only rather than clearly beating it on this dataset. The
+real justification for keeping hybrid is not "it's proven better" —
+it's that BM25 and dense retrieval demonstrably miss DIFFERENT
+questions (a real finding in the ablation's own caveats), suggesting
+genuine complementary value not fully captured by the aggregate
+recall@3 number on a 35-question sample.
+**Trade-offs:** added real complexity (two retrieval systems instead
+of one) for a benefit that is real but not as clean as "hybrid wins."
+**Current validity:** reasonable given the complementary-failure
+evidence, but this is the kind of decision that would benefit from a
+larger dataset (Section 27) to resolve more conclusively.
+**Revisit condition:** if a larger, more statistically powered
+ablation ever shows dense-only performing equivalently with less
+system complexity.
+
+### ADR-8: Session-ownership tokens instead of full user accounts
+**Context:** a real, named security gap — a leaked `session_id` alone
+could be used to hijack a conversation.
+**Options considered:** (a) a full user-account system (signup,
+login, passwords); (b) a lightweight ownership token alongside the
+existing session_id.
+**Chosen:** (b), option B — deliberately, explicitly, as a scoped
+decision (Section 2, Phase 11).
+**Why:** closes the actual, specific, named vulnerability without the
+much larger investment of a full account system this project doesn't
+yet clearly need.
+**Trade-offs:** explicitly does NOT provide per-user data isolation
+or multi-tenancy (Section 1's biggest named risk) — this was a
+conscious scope decision, not an oversight.
+**Current validity:** sound for the problem it was built to solve.
+**Revisit condition:** the moment genuine multi-user/multi-tenant use
+is required, this decision must be revisited together with a real
+accounts system — see Roadmap, Section 32.
+
+### ADR-9: Fail-open caching/rate-limiting, fail-closed session tokens
+**Context:** covered fully in Section 10 — a deliberate, real,
+security-relevant distinction in this codebase.
+**Current validity:** sound and important; explicitly flagged as a
+"do not break" invariant (Section 25, in a future installment).
+
+---
+
+## 23. Current Technical Debt
+
+### P0 — Correctness/Security
+| Problem | Location | Why it matters | Recommended fix | Risk of NOT fixing |
+|---|---|---|---|---|
+| Calculator's restricted `eval()` not verified safe against known Python sandbox-escape techniques | `app/tools/calculator.py` | LLM-mediated arbitrary-code-execution risk if bypassable | Replace with a real math-expression parser library, or explicitly test/document the accepted risk | Unknown severity until tested — treat as real until disproven |
+| Architecture diagram (Section 3) incorrectly lists a `chat_sessions` Postgres table that does not exist | `ENGINEERING_HANDOFF.md` itself | Misleads a future reader about where session data actually lives | Remove the incorrect line (flagged in Part 3 of this handoff) | Low technical risk, real documentation-accuracy risk |
+
+### P1 — Serious production blockers (if usage grows)
+| Problem | Location | Why it matters | Recommended fix | Risk of NOT fixing |
+|---|---|---|---|---|
+| No multi-tenancy | System-wide | Corpus and rate limits are shared across all users | A real `SystemAdapter`-style scoping (tenant_id columns, per-tenant retrieval filtering) | Fine for a demo; a real problem the moment genuine multi-user usage begins |
+| No authentication on document uploads | `app/api/documents.py` | Anyone can add documents to the shared corpus | Require session-ownership token (already exists for chat) on uploads too | Corpus pollution, real content-quality risk |
+| Sequential (non-batched) Redis enqueue | `app/queue/redis_queue.py` | Real, documented throughput bottleneck (`BENCHMARKS.md`: 1.2 jobs/sec) | Pipeline/batch enqueue writes | Currently fine at real observed load; would matter at real scale |
+
+### P2 — Important engineering debt
+| Problem | Location | Why it matters | Recommended fix | Risk of NOT fixing |
+|---|---|---|---|---|
+| `app/retrieval/pipeline.py` is dead code | Confirmed via grep in this pass — zero imports | Confusing for a future contributor who might assume it's a live alternate code path | Delete it, or add a clear "DEPRECATED, superseded by hybrid.py" docstring | Low — purely a clarity issue |
+| Pricing tables duplicated across eval scripts | `evals/runners/llm_benchmark.py`, `model_router_benchmark.py` | Real, small drift risk if one is updated and the other isn't | Consolidate into one shared pricing module | Low currently, grows with more eval scripts |
+| `app/memory/short_term.py`'s current live-usage status is unconfirmed | `app/memory/` | Unclear whether this is dead code (like `pipeline.py`) or still genuinely used | A direct grep/import check (not done in this pass) | Low — a documentation-clarity gap, not a functional risk unless it IS still live and interacting with `long_term.py` in an undocumented way |
+| No conversation-history length cap | `app/memory/long_term.py` | A very long conversation could grow the LLM context window unboundedly | An explicit max-messages or max-tokens truncation on history fetch | Currently unobserved in practice; a real latent cost/latency risk |
+| No centralized OpenTelemetry despite being a listed dependency | `requirements.txt` vs. actual code (confirmed absent in an earlier pass) | A misleading unused dependency | Either implement it or remove the unused dependency | Low — Langfuse already covers the real observability need |
+
+### P3 — Quality-of-life
+| Problem | Location | Why it matters | Recommended fix |
+|---|---|---|---|
+| No dedicated regression test for the "duplicate agent call" risk fixed in Section 11, bug #12 | `backend/tests/` | The fix is real and correct but currently unguarded against a future regression | A test that simulates a tracing failure AFTER a successful `agent.ainvoke()` and asserts the agent function is called exactly once |
+| No document-level dedup on re-ingestion | `app/retrieval/models.py`'s `DocumentChunk` (no content hash) | Re-ingesting the same file under the same name creates duplicate rows | Add a content-hash column and check-before-insert |
+
+---
+
+## 27. Architectural Risks at Scale
+
+| Scale | Database (Neon) | Redis (Upstash) | Queue/Workers | LLM/Retrieval | Cost |
+|---|---|---|---|---|---|
+| 10 users | Fine, real headroom | Fine | Fine (2 workers is ample) | Fine | Negligible, matches real measured costs in `BENCHMARKS.md` |
+| 100 users | Likely fine — real risk only if per-session history grows unbounded (Section 23, P2) | Fine | Fine, though sequential enqueue (Section 23, P1) starts to matter at real concurrent upload volume | Fine; rate limiting protects cost | Low, real routing savings (41.5%) compound favorably |
+| 1,000 users | Real risk: shared corpus + no multi-tenancy means retrieval quality/relevance degrades as unrelated users' documents mix in the same corpus — a real correctness problem, not just a scale problem | Possible real contention between cache/queue/rate-limit/session-token traffic sharing one instance | Sequential enqueue becomes a real, measurable bottleneck | Real cost becomes worth monitoring closely, though routing helps | Worth a real Neon/Upstash tier review at this point |
+| 10,000 users | Multi-tenancy becomes a hard requirement, not an optimization | A single Redis instance may need to split by purpose (separate queue vs. cache instances) | Needs real horizontal worker scaling — current single-Render-process (`WEB_CONCURRENCY=1`) model needs to change; this is exactly where the R2 fallback safety (Section 9) becomes load-bearing rather than theoretical | Retrieval-quality risk from #1,000 compounds; a real reranker (currently absent) starts to matter more | Real, meaningful cost — this is the point where the model-routing savings become operationally important, not just a nice benchmark number |
+| 100,000 users | Requires a genuine redesign, not incremental fixes: real multi-tenancy, likely a dedicated vector DB reconsideration (ADR-1's revisit condition), horizontally scaled workers, and almost certainly the WOE integration (durable execution) discussed throughout this project's history | Would need a real, purpose-split Redis architecture | Requires the durable-execution work this project has explicitly deferred to WOE integration | Requires real retrieval-quality engineering (reranker, confidence gating — both already named gaps in Section 1) | Requires real, dedicated cost engineering — not a redesign this document should attempt to specify in the abstract |
+
+**Explicitly, per this document's own instructions: no
+recommendation for Kubernetes, Kafka, microservices, or Elasticsearch
+is made at any of these scales** — the real bottlenecks identified
+above (multi-tenancy, worker horizontal scaling, retrieval quality)
+do not require those specific technologies to solve, and none of
+this project's actual real usage has approached even the 1,000-user
+row.
+
+---
+
+## 28. Current Architectural Ceiling
+
+| Subsystem | Current design | Likely ceiling | Scaling problem | Migration trigger |
+|---|---|---|---|---|
+| Retrieval (pgvector + HNSW) | Single Postgres instance, HNSW index | Real, workable well beyond current 7,748 chunks — HNSW is designed for this; NOT VERIFIED at what exact chunk count query latency becomes a real problem | Index rebuild time, memory pressure on the Neon instance at very large corpus sizes | A real, measured latency regression as corpus grows — not yet observed |
+| Queue (Redis, single instance) | Sequential enqueue, atomic Lua-script dequeue | Fine well beyond current real usage; sequential enqueue is the first real bottleneck | Enqueue throughput (measured: 1.2 jobs/sec) | Sustained real upload volume exceeding that rate |
+| Workers (single Render process) | 2 ingestion workers + 1 reclaim loop, in-process | Bounded by Render's single-process CPU/memory | Concurrent ingestion jobs compete for the same process's resources | Real observed ingestion queue backlog |
+| Agent runtime (single-turn, one tool call) | LangGraph, no loop | Not a "scale" ceiling in the traditional sense — a capability ceiling: cannot handle tasks genuinely requiring multiple sequential tool calls regardless of user count | N/A (capability, not throughput) | A real task requirement for multi-step tool use — see Roadmap |
+| Database (single Neon instance) | Shared corpus, no tenant isolation | Real ceiling is NOT storage/compute — Neon's Launch plan (already active) has real headroom — the ceiling is CORRECTNESS: unrelated users' data mixing in one corpus | Retrieval relevance degradation as unrelated content grows | Any real requirement for more than one distinct "corpus" of documents |
+
+---
+
+## 32. Roadmap (dependency-aware, not a feature wishlist)
+
+### Phase 0 — Correctness & Security (no dependencies, do first)
+- Fix the Section 3 `chat_sessions` diagram error (trivial, already
+  identified)
+- Resolve the calculator `eval()` risk (test-and-accept, or replace)
+- Confirm `short_term.py`'s live-usage status; remove or clarify
+- Add authentication to the document-upload endpoint
+
+**Depends on:** nothing. **Blocks:** nothing downstream, but should
+close before any of the below to avoid building on top of an
+unresolved security question.
+
+### Phase 1 — Production Foundation
+- Conversation-history length cap
+- Consolidate duplicated pricing tables into one shared module
+- Document-level content-hash dedup on ingestion
+- Batch/pipeline Redis enqueue (Section 23, P1)
+
+**Depends on:** Phase 0 (clean baseline). **Blocks:** nothing
+critical, but reduces real risk before scale-sensitive work below.
+
+### Phase 2 — Agent Runtime (the single biggest capability gap)
+- Add a real loop-back edge from `tools` to `model` in the LangGraph
+  graph, enabling genuine multi-step tool use within one turn
+- Re-run `evals/runners/agent_task_eval.py` against the new graph to
+  measure any change in tool-selection behavior (a real, necessary
+  verification step, not optional)
+
+**Depends on:** Phase 0/1 stability. **Blocks:** any future agent-
+trajectory evaluation work (a named gap, not yet built).
+
+### Phase 3 — Retrieval & Memory
+- Retrieval confidence/abstention gate (directly motivated by the
+  negative-control finding already proven real in this project's own
+  evaluation data)
+- A real cross-encoder reranker (a genuinely free, CPU-based model
+  such as `cross-encoder/ms-marco-MiniLM-L-6-v2` was the specific
+  recommendation discussed in this project's own history, avoiding a
+  new paid API dependency)
+- A larger, more statistically powered retrieval ablation to more
+  conclusively resolve ADR-7's "hybrid tied dense" open question
+
+**Depends on:** Phase 2 not required, but logically related (both
+improve answer quality).
+
+### Phase 4 — Multi-tenancy
+- Real per-user/tenant data isolation across corpus, conversation
+  history, and rate limiting
+- MUST be designed together with cross-tenant retrieval filtering
+  (Section 14's RAG threat model row) — implementing tenancy without
+  this in the same change would be a real, serious regression, not an
+  improvement
+
+**Depends on:** a real decision on whether AgentOS ever needs genuine
+multi-user production use (currently a demo/portfolio project) —
+this phase should not be started speculatively.
+
+### Phase 5 — Durable Execution (WOE Integration)
+- Integrate the separate Workflow Orchestration Engine project
+  (currently ~90% complete) as AgentOS's durable execution backbone
+- This is the real prerequisite for: durable/resumable multi-step
+  agent runs surviving a worker crash mid-execution, time-travel/
+  branch debugging, and genuine human-in-the-loop approval workflows
+- Deliberately NOT built as a duplicate, smaller version of WOE
+  within AgentOS itself — this was an explicit, real decision made
+  during this project's history, not an oversight
+
+**Depends on:** WOE reaching its own completion (tracked in WOE's own
+repository, not this one). **Blocks:** genuine durable execution,
+time-travel debugging, HITL — all currently named, deferred gaps.
+
+### Phase 6 — Scale
+- Horizontal worker scaling beyond Render's single-process model
+- Real load testing beyond the current small-scale concurrent-request
+  test (Section 16, item 5)
+- Revisit ADR-1 (pgvector) only if a real, measured latency ceiling is
+  actually hit — not preemptively
+
+**Depends on:** Phase 4 (multi-tenancy) if the trigger is genuine
+multi-user growth; otherwise deferred indefinitely.
+
+---
+
+## 33. Dependency-Aware PR Sequence (Phase 0 example, illustrative)
+
+**PR-001: Fix Section 3 architecture diagram**
+Files: `ENGINEERING_HANDOFF.md`. Migration: none. Tests: none
+(documentation-only). Risk: none. Dependencies: none.
+
+**PR-002: Resolve calculator eval() risk**
+Files: `app/tools/calculator.py`, possibly a new dependency (a math-
+expression parser library) if replacement is chosen over acceptance.
+Migration: none. Tests: a new test file exercising both legitimate
+expressions and known sandbox-escape attempt patterns. Risk: low if
+replacing with a well-established parser library; changes tool
+behavior, so should be verified against `evals/runners/agent_task_eval.py`'s
+calculator-category tasks afterward. Dependencies: none.
+
+**PR-003: Confirm and resolve short_term.py status**
+Files: `app/memory/short_term.py` and whatever imports it (or
+doesn't). Migration: none. Tests: none if removed; existing tests
+should still pass either way. Risk: very low. Dependencies: none.
+
+**PR-004: Require session-ownership token on document upload**
+Files: `app/api/documents.py`. Migration: none (reuses existing
+session_tokens infrastructure). Tests: a new test asserting upload
+fails without a valid token. Risk: low-medium — this is a real
+behavior change for any existing client code calling the upload
+endpoint without a token; should be paired with a frontend update in
+the same PR or a closely-following one. Dependencies: none (reuses
+Phase 11's existing session-token work).
+
+This handoff does not extend the PR sequence further than Phase 0,
+consistent with this document's own instruction to "not propose 30
+unrelated PRs" — Phases 1 through 6's PR breakdowns should be
+produced at the point each phase is actually started, informed by
+whatever has changed in the codebase by then.
+
+# AgentOS Engineering Handoff — Part 5: Deployment, Frontend, Codebase Map, Principles, Final Snapshot
+
+## 17. Deployment & Infrastructure
+
+**Frontend hosting:** Vercel — `agent-os-weld.vercel.app`.
+**Backend hosting:** Render — `agent-os-backend-v2.onrender.com`,
+single web-service instance, `WEB_CONCURRENCY=1` (explicitly set by
+Render based on available CPU on the instance tier, per real deploy
+logs observed during this project's history).
+**Database:** Neon (managed Postgres + pgvector), Launch plan (a real
+upgrade made during this project's history, following the real BM25
+quota incident, Section 11 bug #1).
+**Cache/Queue:** Upstash (managed Redis), free tier, real spending
+alert configured at $2.
+**Object storage:** Cloudflare R2, free tier, real budget alert
+configured at $2 (informational only — no hard cap exists on
+Cloudflare, a real, accepted, researched limitation, see this
+project's own history).
+**Environment variables (backend, verified against real Render
+config during this project's history):** `DATABASE_URL`,
+`REDIS_URL`, `OPENROUTER_API_KEY`, `LANGFUSE_PUBLIC_KEY`,
+`LANGFUSE_SECRET_KEY`, `TAVILY_API_KEY`, `R2_ENDPOINT_URL`,
+`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` — 10
+real variables, all currently in use except as noted (OpenTelemetry
+being an unused dependency, Section 23).
+
+**Failure behavior during real infrastructure events:**
+- **Deploy:** Docker build (cached layers where content hasn't
+  changed), then workers + reclaim loop start in `lifespan`.
+- **Restart/crash:** in-flight queue jobs are recovered via
+  `reclaim_loop` (Section 11 of Part 2) once the stale-job threshold
+  (120s) passes — this is real, tested behavior, not theoretical.
+  In-flight *agent conversations* (not queue jobs) have no equivalent
+  recovery — a mid-agent-run crash simply loses that turn; this is
+  the real, direct consequence of the "no durable agent execution"
+  gap named throughout this document (Sections 1, 5, 32).
+- **Database outage:** requests fail directly (memory reads/writes go
+  through the same Postgres session as the request) — no fail-open
+  behavior for the database layer, unlike most Redis usage.
+- **Redis outage:** cache and rate-limiting fail open (requests
+  proceed without caching/limiting); session-token verification fails
+  closed (requests are correctly rejected) — this exact, real,
+  intentional split is documented in Part 2, Section 10/11.
+- **R2 outage:** uploads using R2 would fail; the local-path fallback
+  (Section 9, Part 2) is gated on R2 being *unconfigured*, not on R2
+  being *down* — **NOT VERIFIED** whether a live R2 outage (as
+  opposed to missing credentials) is handled gracefully or simply
+  surfaces as a real upload failure.
+- **LLM (OpenRouter) outage:** real retry/backoff (Section 12, Part
+  2) handles transient failures; a sustained outage would surface as
+  a real chat failure after retries are exhausted — no fallback
+  provider exists.
+
+---
+
+## 18. CI/CD
+
+**Workflow:** `.github/workflows/ci.yml` — two real jobs, `test`
+(backend, real Postgres service container with pgvector) and
+`frontend-test` (Node 22, `npm test`). Both genuinely gate every
+push, verified working in Section 11 (Part 3), bugs #7 and #8.
+
+**Real, honest gap already self-corrected once:** this exact CI
+configuration is the subject of one of this project's own most
+important lessons (Section 11, Part 3) — the README claimed CI-gated
+frontend tests for a real period of time before that claim was
+actually true. **This document's own instructions require flagging
+any current mismatch between documentation and implementation** — as
+of this pass, README/CI are consistent (verified: both jobs exist and
+both are referenced correctly in `README.md`).
+
+**Secrets in CI:** `OPENROUTER_API_KEY` is referenced as a GitHub
+Actions secret in the backend test job (`${{ secrets.OPENROUTER_API_KEY }}`)
+— **NOT VERIFIED** in this pass whether backend tests requiring a real
+LLM call actually run in CI (most LLM-touching tests use mocks per
+the failure-injection test suite design, Section 15) or whether this
+secret is genuinely exercised.
+
+**Missing gates, real and explicit:** no security scanning, no
+dependency-vulnerability scanning, no linting/type-checking gate
+found in the CI workflow for either backend or frontend (frontend
+`package.json` has a `lint` script, but **NOT VERIFIED** whether CI
+actually runs it — the workflow's two jobs are named `test` and
+`frontend-test`, not `lint`).
+
+---
+
+## 19. Observability
+
+**Structured logging:** `app/observability/logging.py` — JSON-formatted
+logs with `extra_fields`, used consistently across the queue/worker
+system (job IDs, worker IDs, error details) — this is what made
+several of the real bugs in Section 11 (Part 3) diagnosable in the
+first place (e.g., bug #6, the silently-dying worker, was found via
+code review anticipating exactly this kind of silent failure, and the
+resulting log-and-continue fix relies on this same logging
+infrastructure to actually be useful when it fires in production).
+
+**Tracing:** Langfuse — as of Phase 11 (Section 2), correctly nested:
+one parent "agent_run" observation per request, with the model
+decision, tool execution (Section 6, Part 2 — tool calls specifically
+gained tracing in this same phase, having previously had none at
+all), and final response generation all appearing as one connected
+trace tree.
+
+**What is NOT captured:** OpenTelemetry (listed dependency, not
+implemented — Section 23); no dedicated metrics/dashboard beyond
+Langfuse's own UI and the benchmark scripts run manually; no alerting
+system beyond the two informational billing alerts (Neon, Cloudflare)
+covered in Section 17.
+
+**Privacy-sensitive telemetry, explicitly flagged per this document's
+rules:** Langfuse traces include real user chat messages and model
+outputs — this is genuinely necessary for the tracing to be useful,
+but represents real user data flowing to a third-party service.
+**NOT VERIFIED** whether Langfuse's own data-handling terms were
+reviewed, or whether any redaction/scrubbing exists before data is
+sent.
+
+---
+
+## 20. Performance & Scaling — Measured vs. Expected vs. Unknown
+
+| Metric | Status | Value/Source |
+|---|---|---|
+| Retrieval latency (real, hybrid search) | Measured (indirectly, via benchmark run durations) | Not isolated as its own metric in `BENCHMARKS.md` — bundled into overall LLM benchmark latency |
+| LLM call latency (fast tier) | Measured | 2.34s avg (`gpt-4o-mini`, `BENCHMARKS.md`) |
+| LLM call latency (strong tier) | Measured | 2.39s avg (`gpt-4o`, `BENCHMARKS.md`) — notably, only marginally slower than the fast tier, a real finding that reinforces ADR-6's routing justification |
+| Queue enqueue throughput | Measured | 1.2 jobs/sec (`BENCHMARKS.md`) — the real, named P1 bottleneck (Section 23) |
+| Queue processing throughput | Measured | 3.5 jobs/sec, 4 workers (`BENCHMARKS.md`) |
+| Concurrent-request handling (warm) | Measured | 1.47-1.62s for 5 real simultaneous requests (`BENCHMARKS.md`) — small sample, real data |
+| Concurrent-request handling (cold start) | Measured, but explicitly identified as a cold-start artifact, not steady-state performance | ~28s uniform cluster (`BENCHMARKS.md`) |
+| Frontend performance (page load, bundle size, etc.) | UNKNOWN — not measured in any pass of this project | — |
+| Database query performance at scale | UNKNOWN beyond the real HNSW-indexed 7,748-chunk corpus | — |
+
+**Known bottleneck, already identified with a real number:**
+sequential queue enqueue (Section 23, P1) is the one performance
+characteristic in this codebase that is both measured AND already
+identified as a real, specific limitation with a real fix path
+(batching/pipelining).
+
+---
+
+## 22. Frontend Architecture
+
+**Framework:** Next.js (App Router), TypeScript, Tailwind.
+
+**Real structure, verified this pass — genuinely a single-page
+application:** `frontend/app/page.tsx` (393 lines) is the entire UI —
+there is no `components/` directory, no separate routes. Supporting
+logic lives in `frontend/app/lib/` (`sse.ts` for SSE parsing,
+`format.ts` for tool-call argument formatting), each with its own
+test file.
+
+**State management:** local React state only (`useState`) — session
+ID, session token, messages, upload status, connection status, theme.
+No external state management library; appropriate at this scale, but
+worth naming explicitly since Section 27 (Part 4)'s scale analysis
+would need to revisit this if the UI grows substantially.
+
+**API integration:** direct `fetch()` calls to the backend's real
+endpoints (`/agents/chat/stream`, `/documents/upload`, `/health`) —
+no generated API client, no shared types between frontend and
+backend (a real, if minor, contract-drift risk: a backend response
+shape change would only surface as a frontend runtime bug, not a
+compile-time one).
+
+**SSE handling:** `parseSSEChunk()` in `lib/sse.ts`, real unit-tested
+logic (7 tests) for parsing the backend's actual SSE event format
+(session/tool_call/chunk/done events).
+
+**Session handling:** `sessionId` and `sessionToken` held in React
+state only — **explicitly NOT persisted** to localStorage or any
+browser storage. This means a page refresh loses the session
+entirely, requiring a fresh session/token pair on the next message.
+**NOT VERIFIED** whether this is an intentional simplicity choice or
+an overlooked gap; worth a deliberate decision either way, since it
+directly affects real user experience (a refresh mid-conversation
+loses history from the UI's perspective, even though the backend
+still has it durably stored under the old session_id).
+
+**Testing:** 3 test files (`sse.test.ts`, `format.test.ts`,
+`page.test.tsx`), Vitest + React Testing Library, CI-gated (Section
+18). Coverage is at the unit/component level — no end-to-end browser
+test exists (a named gap, Section 15, Part 3).
+
+**Architectural debt, real and specific:** the single-file `page.tsx`
+structure was already flagged as a real, if not urgent, concern
+during this project's own history — as more features accrete
+(citations, execution traces, evaluation results), this file will
+need to split into real components (`Chat`, `Message`, `ToolTrace`,
+`UploadStatus`, etc.) before it becomes unwieldy. Not urgent at 393
+lines; worth doing before it roughly doubles.
+
+---
+
+## 24. Codebase Map
+
+    backend/
+      app/
+        agents/       LangGraph agent graph (model -> tool -> respond)
+        api/           /agents (chat, streaming), /documents (upload), /health
+        auth/           session-ownership tokens (Redis-backed, fails closed)
+        cache/          idempotency + response caching (fails open)
+        (database.py)   async SQLAlchemy engine/session setup
+        llm/            OpenRouter client, retry/backoff, cost tracking
+        memory/         persisted conversation history (Postgres);
+                        short_term.py's live status NOT VERIFIED (Section 23)
+        observability/  structured logging, Langfuse tracing
+        queue/          Redis job queue, workers, checkpointing,
+                        atomic (Lua) dequeue, stale-job reclaim
+        ratelimit/      Redis-backed rate limiting (fails open)
+        retrieval/      chunking, embeddings, hybrid search (BM25+vector+RRF);
+                        pipeline.py is CONFIRMED DEAD CODE (Section 23)
+        routing/        cost-aware model tier routing
+        storage/        Cloudflare R2 client, local-path fallback
+        tools/          retrieve, web_search, calculator (calculator's
+                        eval() usage is a real, named P0 item, Section 23)
+      alembic/          schema migrations, baselined against production
+                        (only one migration exists so far, 0001)
+      scripts/          corpus ingestion, HNSW index setup, load tests
+      tests/            13 test files, real counts vary by function,
+                        see Section 15 (Part 3)
+
+    frontend/
+      app/
+        page.tsx        the entire UI (393 lines) — see Section 22
+        lib/            sse.ts, format.ts + their test files
+        layout.tsx, globals.css, favicon.ico
+
+    evals/
+      datasets/         real question/task sets for each evaluation
+      runners/          6 independent evaluation scripts
+      results/
+        BENCHMARKS.md   canonical source of truth for every measured
+                        result — see Section 16 (Part 3)
+
+**Ownership boundaries and what future contributors should be careful
+about, real and specific (not generic advice):**
+- `app/retrieval/` — two retrieval code paths exist; only `hybrid.py`
+  is live. Do not resurrect or import from `pipeline.py` without
+  first confirming intent.
+- `app/queue/redis_queue.py` — the atomic Lua-script dequeue and the
+  checkpoint-after-commit ordering (Section 10-11, Part 2) are both
+  real fixes for real, previously-shipped bugs. Any future refactor
+  of this file should re-run the full queue test suite against real
+  Upstash before being trusted.
+- `app/auth/session_tokens.py` — the fail-closed behavior here is
+  intentional and different from the rest of this codebase's Redis
+  usage. Do not "normalize" its error handling to match the fail-open
+  pattern used elsewhere without understanding why it's different.
+- `frontend/app/page.tsx` — a single, large file by design so far;
+  future growth should trigger the component split named in Section
+  22, not indefinite growth of one file.
+
+---
+
+## 25. "Do Not Break This" — Invariants
+
+Every invariant below is grounded in a real, documented bug or
+architectural decision elsewhere in this handoff — not a generic
+best-practice list.
+
+1. **Checkpoint writes must happen only after a confirmed database
+   commit, never before or concurrently.** (Section 11, Part 2;
+   Section 11 bug #3, Part 3.)
+2. **Queue dequeue (LPOP + in-flight marking) must remain atomic.**
+   (Section 11, Part 2; Section 11 bug #2, Part 3.)
+3. **Session-ownership token verification must fail CLOSED, never
+   open, even if this means normalizing it would be "simpler."**
+   (Section 10-11, Part 2; ADR-9, Part 4.)
+4. **BM25 search must never load the `embedding` column.** (Section
+   8.2, Part 2; Section 11 bug #1, Part 3 — this specific invariant
+   already has a permanent regression test, `test_bm25_data_transfer.py`,
+   guarding it directly.)
+5. **R2 credentials must remain configured in any environment running
+   more than one worker process** — the local-path fallback is
+   development-safe, not multi-process-safe. (Section 9, Part 2.)
+6. **The worker loop's outer exception handler must remain broad
+   (catch-log-continue), not narrowed to specific exception types** —
+   narrowing it would reintroduce the silent-death failure mode fixed
+   in Section 11 bug #6 (Part 3).
+7. **Retrieved document/web content must not be treated as trusted
+   instructions** — currently true only by the absence of any
+   write-capable tools; this invariant becomes actively
+   security-critical the moment such a tool is added (Section 14,
+   Part 3).
+8. **A tracing/observability failure must never cause the underlying
+   real operation (an LLM call, an agent run) to execute more than
+   once as a side effect of error-handling.** (Section 11 bug #12,
+   Part 3 — the exact failure mode this fixed.)
+
+---
+
+## 31. Production Readiness Checklist
+
+| Category | Item | Status |
+|---|---|---|
+| Security | Authentication | PARTIAL (session-ownership only) |
+| Security | Authorization/tenant isolation | FAIL (not implemented) |
+| Security | Secrets management | PASS (env vars, not hardcoded) |
+| Security | Prompt injection defense | FAIL (not implemented) |
+| Security | Tool security | PARTIAL (calculator eval() unverified, Section 23 P0) |
+| Security | File upload security | PARTIAL (validated but unauthenticated) |
+| Reliability | Retries | PASS (LLM/embedding calls, real failure-injection tests) |
+| Reliability | Idempotency | PASS (queue attempt tracking, chat response caching) |
+| Reliability | Queue recovery | PASS (real, tested stale-job reclaim) |
+| Reliability | Agent-run crash recovery | FAIL (no durable execution — deferred to WOE integration, Section 32) |
+| Reliability | Graceful shutdown | PASS (`lifespan` context manager signals and awaits worker stop) |
+| Data | Migrations | PASS (Alembic, baselined, though only 1 migration exists) |
+| Data | Backups | UNKNOWN (Neon's own backup policy not independently verified in this pass) |
+| Data | Deletion/retention | FAIL (no explicit conversation-deletion mechanism found) |
+| Data | Consistency | PASS (real, tested commit-then-checkpoint ordering) |
+| Performance | Load tests | PARTIAL (small-scale, real, but not at claimed production scale — Section 20) |
+| Performance | Database indexes | PASS (real HNSW index, session_id index on conversation_messages) |
+| Performance | Connection pools | PASS (SQLAlchemy async engine, standard pooling) |
+| Observability | Logs | PASS (structured JSON) |
+| Observability | Traces | PASS (Langfuse, connected full-run trees) |
+| Observability | Metrics/alerts | PARTIAL (billing alerts only, no application-metric alerting) |
+| Operations | Deployment | PASS (real, working Render/Vercel deploys) |
+| Operations | Rollback | UNKNOWN (no explicit rollback procedure documented or tested) |
+| Operations | Health checks | PASS (`/health/live`, `/health/ready`, real checks) |
+| Operations | Incident response | UNKNOWN (no documented runbook) |
+
+---
+
+## 34. AI-Specific Engineering Principles (as applied in this codebase)
+
+**LLMs are probabilistic components, never the final authorization
+layer:** currently true by default (no write-capable tools exist),
+but this principle should be treated as load-bearing the moment any
+tool with real side effects is added — the model's decision to call a
+tool should never be the only check before that tool executes.
+
+**Tools are security boundaries:** partially honored — the
+calculator's restricted `eval()` (Section 13, Part 3) is a real
+attempt at this, of unverified adequacy; `retrieve` and `web_search`
+have essentially no argument validation because their current
+"blast radius" (a read-only query) is low. This should be revisited
+before either tool gains write capability.
+
+**Retrieved content is untrusted:** NOT currently enforced anywhere
+in this codebase — a real, named gap (Section 14). Document and web
+content flow directly into the LLM's context with no filtering.
+
+**Model output is untrusted input:** partially honored — tool-call
+arguments generated by the model are parsed (`json.loads`) but not
+schema-validated beyond what the tool's own `to_openai_tool()`
+description implies; a malformed or unexpected argument shape would
+likely surface as a real runtime error rather than being caught
+gracefully.
+
+**Budgets are mandatory:** partially implemented — rate limiting
+caps request volume; there is no explicit per-request token budget,
+step-count budget (moot currently, given the single-tool-call graph),
+or time budget beyond whatever the LLM provider's own timeout
+enforces.
+
+**Evaluation must accompany optimization:** genuinely, strongly
+honored in this codebase's real history — every retrieval, routing,
+and tool-description change of consequence in this project's timeline
+was paired with a real before/after evaluation (Section 16, Part 3;
+Section 11 bug #9, Part 3 is the clearest example). This is arguably
+this codebase's single strongest real engineering habit, worth
+explicitly preserving in any future contribution.
+
+---
+
+## 36. Instructions for Future AI Coding Agents
+
+**Before changing code:**
+1. Read this handoff in full (all 5 parts).
+2. Read `README.md`, `ENGINEERING_LOG.md`, `evals/results/BENCHMARKS.md`.
+3. Inspect the specific subsystem's code directly — this handoff
+   cites real files and line counts, but code changes after this
+   document was written; do not assume it is still accurate without
+   checking.
+4. Check `git log` for the subsystem's own recent history.
+5. Identify which "Do Not Break This" invariants (Section 25) apply.
+6. Only then modify code.
+
+**When modifying code:**
+- Preserve the invariants in Section 25 explicitly — if a change
+  seems to require breaking one, that is a signal to stop and
+  reconsider the approach, not a signal to proceed carefully.
+- If touching retrieval, routing, or any tool description: re-run the
+  relevant `evals/` runner before and after, and update
+  `BENCHMARKS.md` if the measured result changes (this matches this
+  project's own strongest real habit, named in Section 34).
+- Avoid unrelated refactors in the same change as a real fix — this
+  codebase's own git history (Section 2) shows a consistent pattern
+  of small, focused, individually-tested commits; match that pattern.
+- Do not add new infrastructure/dependencies without first checking
+  whether existing infrastructure (Postgres, Redis, R2, already
+  provisioned) can serve the same purpose — this exact discipline was
+  explicitly applied when scoping the separate EvalOS project's own
+  tech stack, reusing this project's existing Neon/Upstash/OpenRouter
+  credentials rather than provisioning new services.
+
+**Before declaring completion:**
+- Real tests run and passing (not assumed).
+- A regression test added for any bug fixed.
+- Security implications considered, explicitly, not just functional
+  correctness.
+- `BENCHMARKS.md` updated if measured behavior changed.
+- This handoff document updated if the change affects architecture,
+  a capability-matrix row, or a named gap's status.
+
+---
+
+## 37. Contributor Checklist
+
+    [ ] I understand the subsystem (read the relevant Part of this handoff).
+    [ ] I checked the current code directly, not just this document.
+    [ ] I checked git log for recent related changes.
+    [ ] I identified which "Do Not Break This" invariants apply.
+    [ ] I considered concurrency (event-loop/session issues like bug #11).
+    [ ] I considered failure recovery (crash-consistency like bug #3).
+    [ ] I considered security (like the calculator eval() question).
+    [ ] I added/updated tests, run against REAL infrastructure where
+        this codebase's own convention does so (not mocks alone).
+    [ ] I re-ran the relevant eval/benchmark if I touched retrieval,
+        routing, or a tool description.
+    [ ] I updated BENCHMARKS.md if a measured number changed.
+    [ ] I did not introduce infrastructure this project doesn't
+        already have provisioned, without a real, discussed reason.
+    [ ] I updated this handoff document if architecture changed.
+
+---
+
+## 38. Unknown / Unverified Items (consolidated from all 5 parts)
+
+    - Exact embedding model string currently in use (Part 2, Section 8.1)
+    - Whether chunk boundaries can split mid-sentence/mid-table (Part 2, Section 8.1)
+    - Whether short_term.py is still live code or fully superseded (Part 2/4)
+    - chat_sessions table's real prior existence (CONFIRMED absent, Part 3 — resolved, not open)
+    - Whether failed ingestion jobs' R2 objects are cleaned up or intentionally left for retry (Part 2, Section 9)
+    - Whether git history has ever contained an accidentally-committed secret (Part 3, Section 13)
+    - Whether the calculator's eval() sandbox is actually exploitable (Part 3, Section 13/14) — flagged as real risk, not tested
+    - Any PII-scrubbing before data reaches Langfuse (Part 5, Section 19)
+    - Whether CI actually runs the frontend's lint script (Part 5, Section 18)
+    - Neon's own backup/recovery policy and RTO (Part 5, Section 31)
+    - Any documented incident-response runbook (Part 5, Section 31) — none found
+    - OpenRouter-specific latency overhead versus calling providers directly (Part 4, ADR-5)
+    - Exact chunk count at which HNSW query latency becomes a real problem (Part 4, Section 28)
+    - Production traffic volume / real user count — this remains a demo/portfolio-stage project; NOT a claim of any specific real production traffic
+
+---
+
+## 39. If You Only Read One Section
+
+**What AgentOS is:** a real, deployed FastAPI + LangGraph agent with
+hybrid retrieval, a Redis job queue, session-ownership security, and
+an unusually rigorous, honest evaluation practice for a project at
+this stage.
+
+**What works:** everything in the capability matrix (Part 1) marked
+"Implemented" or "Implemented, measured" — genuinely verified against
+real infrastructure, not just written and assumed.
+
+**What has been proven:** 94.3% retrieval recall@3 at real scale
+(132 docs), a real 41.5% cost saving from model routing, zero
+cross-request contamination under real concurrent load, and a real
+agent behavioral bug found and measurably fixed via evaluation
+(0/10 -> 6/10).
+
+**What has failed before, and been fixed:** 12 real, distinct bugs
+(Part 3, Section 11), spanning a real production incident (database
+quota exhaustion), two real crash-consistency bugs, and two genuine
+test-infrastructure bugs — each with a documented cause, fix, and
+verification.
+
+**Biggest current risks:** no multi-tenancy (the single biggest named
+gap); the calculator's unverified `eval()` sandbox (a real, specific
+P0 security question); no durable agent-run execution (a mid-run
+crash loses that turn, with no recovery — unlike the queue system,
+which does recover).
+
+**Biggest architectural strengths:** the fail-open/fail-closed
+distinction across Redis usage (Section 10, Part 2) is deliberate and
+correct; the evaluation-accompanies-every-optimization habit (Section
+34) is this codebase's single most consistently well-executed
+engineering practice across its entire real history.
+
+**Most important next steps, in dependency order:** resolve Phase 0's
+real security/correctness items (Part 4, Section 32) before anything
+else; then either close AgentOS's own remaining capability gaps
+(iterative tool use, retrieval confidence gating) or integrate WOE for
+durable execution — a decision already deliberately deferred rather
+than duplicated.
+
+**What future contributors must not break:** the 8 invariants in
+Section 25 (Part 5) — each one maps directly to a real bug this
+project has already paid the cost of finding and fixing once.
+
+---
+
+## 40. Final System Snapshot
+
+    AgentOS State
+    Date:                 Aug 28, 2026 (this handoff's writing date)
+    Repository:           github.com/rehan-khan-007/Agent-OS
+    Branch:               main
+    Commit:               a1e3e46 (at the start of this handoff's
+                           writing; verify current HEAD before relying
+                           on any file/line-count citation in this
+                           document)
+    Architecture:         FastAPI + LangGraph, single-process backend
+    Backend:               Python, FastAPI, deployed on Render
+    Frontend:               Next.js/TypeScript, deployed on Vercel,
+                            genuinely single-page (page.tsx)
+    Database:               PostgreSQL + pgvector (Neon, Launch plan)
+    Cache/Queue:            Redis (Upstash, free tier)
+    Storage:                Cloudflare R2 (free tier), local fallback
+    LLM:                    OpenRouter gateway, heuristic-routed
+                            (fast/strong tiers)
+    Retrieval:               Hybrid (BM25 + pgvector, RRF-fused),
+                            94.3% recall@3, HNSW-indexed
+    Memory:                  Postgres-backed, session-scoped, no
+                            explicit retention policy
+    Authentication:          Session-ownership tokens (Redis, fails
+                            closed); no user accounts
+    Authorization:           Not implemented (no multi-tenancy)
+    Observability:           Structured JSON logging + Langfuse
+                            (connected full-run traces)
+    Testing:                 75 backend tests + 20 frontend tests,
+                            CI-gated
+    Benchmarks:              6 independent, real, dated evaluations —
+                            see evals/results/BENCHMARKS.md
+    Deployment:              Live, real, both frontend and backend
+    Known critical issues:   Calculator eval() sandbox unverified;
+                            Section 3 diagram error (chat_sessions) —
+                            both flagged, neither yet resolved as of
+                            this snapshot
+    Known high-priority
+    issues:                  No multi-tenancy; no upload
+                            authentication; sequential queue enqueue
+    Next milestone:          Phase 0 (Section 32) — correctness and
+                            security items — before any further
+                            capability work
