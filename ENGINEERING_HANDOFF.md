@@ -225,14 +225,10 @@ on a separate project (EvalOS) sharing the same development machine.
 
 ---
 
-## 3. Current Architecture
-cat >> ~/Agent-OS/ENGINEERING_HANDOFF.md << 'HANDOFFPART1BEOF'
-
----
 
 ## 3. Current Architecture
 
-    Next.js UI (Vercel)
+    NextNext.js UI (Vercel)
            |
       HTTPS / SSE
            |
@@ -241,23 +237,20 @@ cat >> ~/Agent-OS/ENGINEERING_HANDOFF.md << 'HANDOFFPART1BEOF'
            |
      -----------------------------
      |            |              |
-  LangGraph    Redis          PostgreSQL
-   Agent      (Upstash)       + pgvector (Neon)
-  model ->    queue, cache,   conversation history,
-  tool ->     rate-limit,     document chunks,
-  respond     session tokens  chat_sessions
+     LangGraph    Redis          PostgreSQL
+     Agent      (Upstash)       + pgvector (Neon)
+     model ->    queue, cache,   conversation history,
+     tool ->     rate-limit,     document chunks,
+     respond     session tokens  chat_sessions
      |
      -----------------------------
      |            |              |
-  retrieve    web_search     calculator
+     retrieve    web_search     calculator
      |
-  (hybrid: BM25 + pgvector, RRF-fused)
+     (hybrid: BM25 + pgvector, RRF-fused)
      |
-  Background Workers  <-->  Cloudflare R2
-  (ingestion,                (uploads, local
-   checkpointed)              fallback)
-
-  Cross-cutting: Langfuse tracing (full agent-run trees),
-  structured JSON logging, Alembic migrations
-
-This reflects the actual architecture as of commit f55ea27 — see
+     Background Workers  <-->  Cloudflare R2
+     (ingestion,                (uploads, local
+     checkpointed)              fallback)
+     
+     Cross-cutting: Langfuse tracing (full agent-run trees), structured JSON logging, Alembic migrations
